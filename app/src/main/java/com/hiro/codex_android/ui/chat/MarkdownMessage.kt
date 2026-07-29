@@ -1,7 +1,11 @@
 package com.hiro.codex_android.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,11 +51,17 @@ import org.commonmark.node.StrongEmphasis
 import org.commonmark.node.Text as MarkdownText
 import org.commonmark.node.ThematicBreak
 import org.commonmark.parser.Parser
+import org.commonmark.ext.gfm.tables.TableBlock
+import org.commonmark.ext.gfm.tables.TableCell
+import org.commonmark.ext.gfm.tables.TableHead
+import org.commonmark.ext.gfm.tables.TableRow
+import org.commonmark.ext.gfm.tables.TablesExtension
 
 /** CommonMark 解析后的 Compose 渲染：正文、列表、引用、链接和代码块均保持结构。 */
 @Composable
 fun MarkdownMessage(markdown: String, modifier: Modifier = Modifier) {
-    val document = remember(markdown) { Parser.builder().build().parse(markdown) }
+    val parser = remember { Parser.builder().extensions(listOf(TablesExtension.create())).build() }
+    val document = remember(markdown) { parser.parse(markdown) }
     SelectionContainer {
         // 外层消息气泡决定最大宽度；短回复不应被拉成整行。
         Column(modifier = modifier) {
@@ -76,6 +86,7 @@ private fun MarkdownBlocks(parent: Node, compact: Boolean = false) {
             )
             is FencedCodeBlock -> MarkdownCodeBlock(block.literal)
             is IndentedCodeBlock -> MarkdownCodeBlock(block.literal)
+            is TableBlock -> MarkdownTable(block)
             is BlockQuote -> Row(Modifier.padding(vertical = if (compact) 0.dp else 4.dp)) {
                 Spacer(Modifier.width(3.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 Spacer(Modifier.width(10.dp))
@@ -86,6 +97,51 @@ private fun MarkdownBlocks(parent: Node, compact: Boolean = false) {
             is ThematicBreak -> HorizontalDivider(Modifier.padding(vertical = 10.dp))
             is HtmlBlock -> Text(block.literal, style = MaterialTheme.typography.bodyMedium)
             else -> MarkdownBlocks(block, compact)
+        }
+    }
+}
+
+/** GFM 表格：固定的易读列宽，窄屏可横向滚动而不会把文字压得不可读。 */
+@Composable
+private fun MarkdownTable(table: TableBlock) {
+    val rows = children(table)
+        .flatMap { section -> children(section).filterIsInstance<TableRow>() }
+        .toList()
+    if (rows.isEmpty()) return
+
+    val scrollState = rememberScrollState()
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier
+            .padding(top = 8.dp, bottom = 4.dp)
+            .fillMaxWidth(),
+    ) {
+        Column(Modifier.horizontalScroll(scrollState).padding(1.dp)) {
+            rows.forEach { row ->
+                val header = row.parent is TableHead
+                val cells = children(row).filterIsInstance<TableCell>().toList()
+                Row {
+                    cells.forEach { cell ->
+                        Box(
+                            Modifier
+                                .width(132.dp)
+                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                .background(
+                                    if (header) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                )
+                                .padding(horizontal = 9.dp, vertical = 7.dp),
+                        ) {
+                            Text(
+                                text = markdownInline(cell, MaterialTheme.colorScheme.surface),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
