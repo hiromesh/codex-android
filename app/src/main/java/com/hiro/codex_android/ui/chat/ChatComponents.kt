@@ -65,6 +65,7 @@ import com.hiro.codex_android.data.model.ModelInfo
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
 import com.hiro.codex_android.ui.theme.GlassBorder
+import com.hiro.codex_android.ui.theme.GlassFillStrong
 
 /** 用户消息：右对齐深灰气泡 */
 @Composable
@@ -91,7 +92,7 @@ fun AgentMessageItem(item: ThreadItem.AgentMessage, streaming: Boolean) {
         // 正文优先保证可读性：比其他玻璃层更深、更不透明，避免渐变背景吞掉 Markdown 文本。
         Surface(
             modifier = Modifier.widthIn(max = 360.dp),
-            color = MaterialTheme.colorScheme.background.copy(alpha = 0.88f),
+            color = GlassFillStrong,
             contentColor = MaterialTheme.colorScheme.onBackground,
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, GlassBorder),
@@ -376,7 +377,7 @@ fun ChatInputBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Surface(
-            color = MaterialTheme.colorScheme.surface,
+            color = GlassFillStrong,
             shape = RoundedCornerShape(18.dp),
             shadowElevation = 8.dp,
             border = BorderStroke(1.dp, GlassBorder),
@@ -416,9 +417,10 @@ fun ChatInputBar(
                     if (generating) {
                         // 不确定进度环持续旋转，明确告诉用户服务端仍在生成；中心仍可点击停止。
                         FilledIconButton(onClick = onInterrupt, modifier = Modifier.size(36.dp)) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(24.dp)) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(30.dp)) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(23.dp),
+                                    // 环贴近按钮内沿旋转，中心只保留停止方块。
+                                    modifier = Modifier.size(30.dp),
                                     color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.65f),
                                     strokeWidth = 2.dp,
                                 )
