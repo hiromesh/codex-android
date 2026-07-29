@@ -179,7 +179,10 @@ class ChatViewModel(
         val state = _uiState.value
         val threadId = state.threadId ?: return
         val turnId = state.currentTurnId ?: return
-        viewModelScope.launch { repo.interruptTurn(threadId, turnId) }
+        viewModelScope.launch {
+            runCatching { repo.interruptTurn(threadId, turnId) }
+                .onFailure { e -> _uiState.update { it.copy(error = "中断失败：${e.message}") } }
+        }
     }
 
     /** 从锁屏/后台回来时主动对账；后台期间 WebSocket 的通知不保证能保活或重放。 */
@@ -214,7 +217,15 @@ class ChatViewModel(
     fun respondApproval(decision: ApprovalDecision) {
         val request = _uiState.value.pendingApproval ?: return
         _uiState.update { it.copy(pendingApproval = null) }
-        viewModelScope.launch { repo.respondApproval(request.requestId, decision) }
+        viewModelScope.launch {
+            runCatching { repo.respondApproval(request.requestId, decision) }
+                // 应答失败时恢复弹窗让用户重试；否则审批在服务端永远挂起。
+                .onFailure { e ->
+                    _uiState.update {
+                        it.copy(pendingApproval = request, error = "审批应答失败：${e.message}")
+                    }
+                }
+        }
     }
 
     /** §3.9② thread/settings/update：模型与推理档位同属会话级设置。 */
@@ -223,7 +234,8 @@ class ChatViewModel(
         _uiState.update { it.copy(model = modelId, effort = effort) }
         if (threadId != null) {
             viewModelScope.launch {
-                repo.updateThreadSettings(threadId, model = modelId, effort = effort)
+                runCatching { repo.updateThreadSettings(threadId, model = modelId, effort = effort) }
+                    .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             }
         }
         // 新会话还没建：只记本地状态，send() 会在建立后写入 effort。
@@ -312,18 +324,34 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 服务端快照对账。轮次仍在进行时，本地流式增量比服务端快照新
+     * （delta 不落盘，read 返回的进行中 item 可能为空或偏短），只更新元数据，
+     * 不覆盖 items，也不动 pendingApproval；轮次已结束时快照是最终真相，全量替换。
+     */
     private fun applyServerThread(thread: Thread) {
         val activeTurn = thread.turns.lastOrNull { it.status == "inProgress" }
+        val lastError = thread.turns.lastOrNull()?.takeIf { it.status == "failed" }?.error
         _uiState.update { state ->
-            state.copy(
-                title = thread.name ?: thread.preview.ifBlank { state.title },
-                model = thread.model ?: state.model,
-                items = thread.turns.flatMap(Turn::items),
-                generating = activeTurn != null,
-                currentTurnId = activeTurn?.id,
-                pendingApproval = null,
-                error = null,
-            )
+            if (activeTurn != null) {
+                state.copy(
+                    title = thread.name ?: thread.preview.ifBlank { state.title },
+                    model = thread.model ?: state.model,
+                    generating = true,
+                    currentTurnId = activeTurn.id,
+                )
+            } else {
+                state.copy(
+                    title = thread.name ?: thread.preview.ifBlank { state.title },
+                    model = thread.model ?: state.model,
+                    items = thread.turns.flatMap(Turn::items),
+                    generating = false,
+                    currentTurnId = null,
+                    // 轮次结束时不可能有待应答审批（服务端在等应答就不会结束轮次），可安全清除。
+                    pendingApproval = null,
+                    error = lastError,
+                )
+            }
         }
     }
 

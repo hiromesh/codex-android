@@ -155,6 +155,8 @@ class WebSocketCodexRepository(
     }
 
     override suspend fun respondApproval(requestId: Int, decision: ApprovalDecision) {
+        // 应答前先确保连接已恢复；否则 socket 断开时直接抛错，审批在服务端永远挂起。
+        ensureInitialized()
         sendResponse(requestId, JSONObject().put("decision", decision.wireValue))
     }
 
@@ -197,14 +199,20 @@ class WebSocketCodexRepository(
                 socket = null
                 throw IOException("连接服务器超时")
             }
-            config = desired
-            attachedThreadId = null
-
             val init = JSONObject()
                 .put("clientInfo", JSONObject().put("name", clientName).put("version", version))
                 .put("capabilities", JSONObject().put("experimentalApi", true))
-            requestRaw("initialize", init)
-            sendNotification("initialized")
+            try {
+                requestRaw("initialize", init)
+                sendNotification("initialized")
+            } catch (e: Exception) {
+                // 握手失败不能留下“已连接”标记，否则后续 ensureInitialized 会直接跳过重连。
+                socket?.cancel()
+                socket = null
+                throw e
+            }
+            config = desired
+            attachedThreadId = null
         }
     }
 
@@ -260,6 +268,13 @@ class WebSocketCodexRepository(
         if (socket?.send(message.toString()) != true) throw IOException("WebSocket 未连接，无法回复审批")
     }
 
+    /** 对不支持的服务端反向请求回 JSON-RPC error；best-effort，连接断开时静默忽略。 */
+    private fun sendErrorResponse(id: Int, code: Int, message: String) {
+        val error = JSONObject().put("code", code).put("message", message)
+        val response = JSONObject().put("id", id).put("error", error)
+        socket?.send(response.toString())
+    }
+
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             openWaiter?.complete(Unit)
@@ -311,8 +326,9 @@ class WebSocketCodexRepository(
         val method = message.optString("method")
         val params = message.optJSONObject("params") ?: JSONObject()
         if (method !in APPROVAL_METHODS) {
-            // 不能让服务端因未知反向请求永远阻塞；保守地拒绝。
-            sendResponse(message.getInt("id"), JSONObject().put("decision", ApprovalDecision.Decline.wireValue))
+            // 未知反向请求不能伪造 result（permissions 审批期望的是 {permissions, scope}，
+            // 不是 {decision}）；回 JSON-RPC error 让服务端走失败路径，而不是永远阻塞。
+            sendErrorResponse(message.getInt("id"), -32601, "unsupported method: $method")
             return
         }
         _events.emit(
@@ -372,18 +388,20 @@ class WebSocketCodexRepository(
                 val turnId = turn?.optString("id").orEmpty()
                 val threadId = params.optString("threadId", turnThreads[turnId] ?: currentThreadId.orEmpty())
                 emitWhenThreadKnown(threadId) {
-                    CodexEvent.TurnCompleted(it, turnId, turn?.statusValue().orEmpty(), turn?.nullableString("error"))
+                    CodexEvent.TurnCompleted(it, turnId, turn?.statusValue().orEmpty(), turn?.errorMessage())
                 }
                 if (activeTurnThreadId == threadId) activeTurnThreadId = null
             }
             "thread/tokenUsage/updated" -> {
                 val threadId = params.optString("threadId", currentThreadId.orEmpty())
-                val usage = params.optJSONObject("tokenUsage") ?: params
-                emitWhenThreadKnown(threadId) {
-                    CodexEvent.TokenUsageUpdated(
-                        it,
-                        TokenUsage(usage.optLong("usedTokens", usage.optLong("totalTokens")), usage.optLong("contextWindow")),
-                    )
+                // tokenUsage = { total: { totalTokens, ... }, last: {...}, modelContextWindow: number|null }
+                val usage = params.optJSONObject("tokenUsage")
+                if (usage != null) {
+                    val used = usage.optJSONObject("total")?.optLong("totalTokens") ?: 0L
+                    val window = if (usage.isNull("modelContextWindow")) 0L else usage.optLong("modelContextWindow")
+                    emitWhenThreadKnown(threadId) {
+                        CodexEvent.TokenUsageUpdated(it, TokenUsage(used, window))
+                    }
                 }
             }
         }
@@ -450,7 +468,7 @@ class WebSocketCodexRepository(
         id = value.optString("id"),
         status = value.statusValue(),
         items = value.optJSONArray("items").objects().mapNotNull(::parseItem),
-        error = value.nullableString("error"),
+        error = value.errorMessage(),
     )
 
     private fun parseItem(value: JSONObject?): ThreadItem? {
@@ -489,6 +507,10 @@ class WebSocketCodexRepository(
         else -> default
     }
 
+    /** turn.error 是 TurnError 对象（{message, codexErrorInfo, ...}）；兼容旧版的字符串形式。 */
+    private fun JSONObject.errorMessage(): String? =
+        optJSONObject("error")?.nullableString("message") ?: nullableString("error")
+
     private fun JSONObject.nullableString(name: String): String? = if (has(name) && !isNull(name)) optString(name) else null
     private fun JSONObject.optIntOrNull(name: String): Int? = if (has(name) && !isNull(name)) optInt(name) else null
     private fun JSONObject.optLongOrNull(name: String): Long? = if (has(name) && !isNull(name)) optLong(name) else null
@@ -505,10 +527,10 @@ class WebSocketCodexRepository(
                     is String -> entry.takeIf(String::isNotBlank)?.let(::add)
                     is JSONObject -> {
                         val path = sequenceOf("path", "filePath", "filename", "name")
-                            .mapNotNull(entry::nullableString)
+                            .mapNotNull { name -> entry.nullableString(name) }
                             .firstOrNull()
                         val kind = sequenceOf("kind", "status", "changeType")
-                            .mapNotNull(entry::nullableString)
+                            .mapNotNull { name -> entry.nullableString(name) }
                             .firstOrNull()
                         when {
                             path != null && kind != null -> add("$kind · $path")

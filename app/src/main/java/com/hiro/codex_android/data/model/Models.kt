@@ -92,7 +92,7 @@ data class ModelInfo(
     val defaultReasoningEffort: String = "medium",
 )
 
-/** §4 thread/tokenUsage/updated：上下文 token 占用（字段以后端实际返回为准） */
+/** §4 thread/tokenUsage/updated：tokenUsage.total.totalTokens 为累计用量，modelContextWindow 为上下文窗口（可能为 null，解析为 0） */
 data class TokenUsage(
     val usedTokens: Long,
     val contextWindow: Long,
