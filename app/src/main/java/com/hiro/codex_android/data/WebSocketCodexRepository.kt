@@ -394,13 +394,19 @@ class WebSocketCodexRepository(
             }
             "thread/tokenUsage/updated" -> {
                 val threadId = params.optString("threadId", currentThreadId.orEmpty())
-                // tokenUsage = { total: { totalTokens, ... }, last: {...}, modelContextWindow: number|null }
+                // tokenUsage = { total: {...}, last: {...}, modelContextWindow: number|null }
+                // TUI 的口径：last 是最近一次 API 调用的用量，等于当前上下文窗口的真实占用；
+                // total 是整个会话的累计用量（计费口径），每轮都重发完整历史，会随轮数线性膨胀，
+                // 拿来算占用会让百分比虚高 N 倍。另外 TUI 会减去固定基线（系统提示词/工具定义），
+                // 与 protocol.rs 的 percent_of_context_window_remaining 保持一致。
                 val usage = params.optJSONObject("tokenUsage")
                 if (usage != null) {
-                    val used = usage.optJSONObject("total")?.optLong("totalTokens") ?: 0L
+                    val last = usage.optJSONObject("last")?.optLong("totalTokens") ?: 0L
                     val window = if (usage.isNull("modelContextWindow")) 0L else usage.optLong("modelContextWindow")
+                    val used = (last - CONTEXT_BASELINE_TOKENS).coerceAtLeast(0)
+                    val effectiveWindow = (window - CONTEXT_BASELINE_TOKENS).coerceAtLeast(0)
                     emitWhenThreadKnown(threadId) {
-                        CodexEvent.TokenUsageUpdated(it, TokenUsage(used, window))
+                        CodexEvent.TokenUsageUpdated(it, TokenUsage(used, effectiveWindow))
                     }
                 }
             }
@@ -573,6 +579,8 @@ class WebSocketCodexRepository(
     private companion object {
         const val CONNECT_TIMEOUT_MS = 15_000L
         const val RPC_TIMEOUT_MS = 30_000L
+        /** 与 codex-rs/protocol/src/protocol.rs 的 BASELINE_TOKENS 一致：系统提示词等固定开销。 */
+        const val CONTEXT_BASELINE_TOKENS = 12_000L
         const val RECONNECT_ATTEMPTS = 5
         const val RECONNECT_BASE_DELAY_MS = 1_000L
         val APPROVAL_METHODS = setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval")

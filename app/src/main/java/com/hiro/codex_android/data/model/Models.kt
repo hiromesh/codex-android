@@ -92,7 +92,11 @@ data class ModelInfo(
     val defaultReasoningEffort: String = "medium",
 )
 
-/** §4 thread/tokenUsage/updated：tokenUsage.total.totalTokens 为累计用量，modelContextWindow 为上下文窗口（可能为 null，解析为 0） */
+/**
+ * §4 thread/tokenUsage/updated：上下文窗口占用，与 TUI 口径一致。
+ * usedTokens = last.totalTokens - 12000 基线（最近一次调用的占用，非累计），
+ * contextWindow = modelContextWindow - 12000 基线。UI 直接 usedTokens/contextWindow 得占用比。
+ */
 data class TokenUsage(
     val usedTokens: Long,
     val contextWindow: Long,
