@@ -120,6 +120,7 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
                         is ThreadItem.CommandExecution -> CommandExecutionCard(item)
                         is ThreadItem.FileChange -> FileChangeCard(item)
                         is ThreadItem.Plan -> PlanCard(item)
+                        is ThreadItem.WebSearch -> WebSearchCard(item)
                         is ThreadItem.Reasoning -> ReasoningItem(item)
                     }
                 }

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -244,6 +245,46 @@ fun PlanCard(item: ThreadItem.Plan) {
             Text("计划", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             Text(item.text, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/** 内置联网搜索的过程卡片；搜索结论由随后的 agentMessage 展示。 */
+@Composable
+fun WebSearchCard(item: ThreadItem.WebSearch) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.widthIn(max = 340.dp),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = CardDefaults.outlinedCardBorder(enabled = true),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text("联网搜索", style = MaterialTheme.typography.labelMedium)
+                if (item.query.isNotBlank()) {
+                    Text(
+                        item.query,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (item.status == "inProgress") {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            }
         }
     }
 }

@@ -68,6 +68,13 @@ sealed interface ThreadItem {
         val text: String,
     ) : ThreadItem
 
+    /** Codex 内置联网搜索；最终内容通常会汇总到后续 agentMessage。 */
+    data class WebSearch(
+        override val id: String,
+        val query: String = "",
+        val status: String = "completed",
+    ) : ThreadItem
+
     data class Reasoning(
         override val id: String,
         val summary: List<String> = emptyList(),

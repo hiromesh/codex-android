@@ -490,6 +490,11 @@ class WebSocketCodexRepository(
             )
             "fileChange" -> ThreadItem.FileChange(id, value.optJSONArray("changes").fileChanges(), value.statusValue("completed"))
             "plan" -> ThreadItem.Plan(id, value.optString("text"))
+            "webSearch" -> ThreadItem.WebSearch(
+                id = id,
+                query = value.webSearchQuery(),
+                status = value.statusValue("completed"),
+            )
             "reasoning" -> ThreadItem.Reasoning(id, value.optJSONArray("summary").textFragments())
             else -> null
         }
@@ -516,6 +521,15 @@ class WebSocketCodexRepository(
     /** turn.error 是 TurnError 对象（{message, codexErrorInfo, ...}）；兼容旧版的字符串形式。 */
     private fun JSONObject.errorMessage(): String? =
         optJSONObject("error")?.nullableString("message") ?: nullableString("error")
+
+    /** 不同 app-server 版本将搜索词放在 query/searchQuery 或 action.query 中。 */
+    private fun JSONObject.webSearchQuery(): String = sequenceOf(
+        nullableString("query"),
+        nullableString("searchQuery"),
+        nullableString("text"),
+        optJSONObject("action")?.nullableString("query"),
+        optJSONObject("input")?.nullableString("query"),
+    ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
 
     private fun JSONObject.nullableString(name: String): String? = if (has(name) && !isNull(name)) optString(name) else null
     private fun JSONObject.optIntOrNull(name: String): Int? = if (has(name) && !isNull(name)) optInt(name) else null
