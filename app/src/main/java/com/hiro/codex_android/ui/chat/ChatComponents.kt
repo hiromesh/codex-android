@@ -91,7 +91,7 @@ fun AgentMessageItem(item: ThreadItem.AgentMessage, streaming: Boolean) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         // 正文优先保证可读性：比其他玻璃层更深、更不透明，避免渐变背景吞掉 Markdown 文本。
         Surface(
-            modifier = Modifier.widthIn(max = 360.dp),
+            modifier = Modifier.widthIn(max = 340.dp),
             color = GlassFillStrong,
             contentColor = MaterialTheme.colorScheme.onBackground,
             shape = RoundedCornerShape(16.dp),
