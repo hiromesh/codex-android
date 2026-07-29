@@ -202,14 +202,13 @@ fun FileChangeCard(item: ThreadItem.FileChange) {
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface,
         ),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.widthIn(max = 340.dp),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         border = CardDefaults.outlinedCardBorder(enabled = true),
     ) {
         Column(
             Modifier
-                .fillMaxWidth()
                 .clickable(enabled = item.changes.isNotEmpty()) { expanded = !expanded }
                 .padding(12.dp),
         ) {
