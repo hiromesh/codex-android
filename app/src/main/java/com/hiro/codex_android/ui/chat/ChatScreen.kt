@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -90,15 +91,24 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
         LaunchedEffect(listState) {
             snapshotFlow {
                 val layout = listState.layoutInfo
-                val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
-                lastVisible >= layout.totalItemsCount - 1
+                val lastIndex = layout.totalItemsCount - 1
+                val lastItem = layout.visibleItemsInfo.lastOrNull { it.index == lastIndex }
+                // 推理卡片可能比视口还高。仅“能看到最后一个 item”不代表用户在它的底部。
+                lastItem != null && lastItem.offset + lastItem.size <= layout.viewportEndOffset + 12
             }.collect { atBottom -> followLatest = atBottom }
         }
 
         // 新 item 或流式文本增长时，仅在用户原本位于底部的情况下跟随最新消息。
-        val lastLength = (items.lastOrNull() as? ThreadItem.AgentMessage)?.text?.length ?: 0
-        LaunchedEffect(items.size, lastLength) {
-            if (followLatest && items.isNotEmpty()) listState.scrollToItem(items.size - 1)
+        val lastContentLength = when (val item = items.lastOrNull()) {
+            is ThreadItem.AgentMessage -> item.text.length
+            is ThreadItem.Reasoning -> item.summary.sumOf(String::length)
+            else -> 0
+        }
+        LaunchedEffect(items.size, lastContentLength) {
+            if (followLatest && !listState.isScrollInProgress && items.isNotEmpty()) {
+                // scrollToItem(last) 会把高卡片的顶部贴到视口，故向末尾滚一个足够大的距离。
+                listState.scrollBy(100_000f)
+            }
         }
         
         Box(Modifier.padding(padding).fillMaxSize()) {

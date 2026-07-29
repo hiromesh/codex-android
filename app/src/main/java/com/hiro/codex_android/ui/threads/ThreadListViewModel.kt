@@ -28,7 +28,7 @@ class ThreadListViewModel(private val repo: CodexRepository) : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(loading = true, error = null) }
-            runCatching { repo.listThreads(limit = 10) }
+            runCatching { repo.listThreads(limit = 15) }
                 .onSuccess { page -> _uiState.update { it.copy(loading = false, threads = page.data) } }
                 .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
         }

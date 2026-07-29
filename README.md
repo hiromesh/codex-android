@@ -4,7 +4,7 @@ An Android client for remotely connecting to `codex app-server`. It uses WebSock
 
 ## Features
 
-- Latest 10 server-side sessions and conversation history restoration
+- Latest 15 server-side sessions and conversation history restoration
 - Streaming Markdown responses
 - Create sessions, resume existing sessions, and stop generation
 - Model and reasoning-effort selection
