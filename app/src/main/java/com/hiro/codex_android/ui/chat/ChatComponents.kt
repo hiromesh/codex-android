@@ -368,6 +368,8 @@ fun ChatInputBar(
     val inputState = rememberTextFieldState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    // 输入区域与控制栏必须使用同一张底，避免 Material TextField 自己的 container 色形成色块。
+    val inputBackground = Color(0xFF1B2939)
     Column(
         Modifier
             .fillMaxWidth()
@@ -376,7 +378,7 @@ fun ChatInputBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Surface(
-            color = GlassFillStrong,
+            color = inputBackground,
             contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(18.dp),
             shadowElevation = 8.dp,
@@ -390,8 +392,10 @@ fun ChatInputBar(
                     lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 4),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
+                        focusedContainerColor = inputBackground,
+                        unfocusedContainerColor = inputBackground,
+                        disabledContainerColor = inputBackground,
+                        errorContainerColor = inputBackground,
                         focusedTextColor = MaterialTheme.colorScheme.onSurface,
                         unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
                         focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
