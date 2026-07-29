@@ -39,11 +39,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hiro.codex_android.data.ServiceLocator
 import com.hiro.codex_android.data.model.Thread
+import com.hiro.codex_android.ui.theme.GlassBorder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,7 +61,7 @@ fun ThreadListScreen(
     LaunchedEffect(Unit) { vm.refresh() }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         // 内容自行消费安全区，避免 Scaffold 与 statusBarsPadding 叠加产生双倍顶部留白。
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) {
@@ -107,9 +109,9 @@ fun ThreadListScreen(
                 Surface(
                     modifier = Modifier.size(48.dp),
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    tonalElevation = 2.dp,
-                    border = CardDefaults.outlinedCardBorder(enabled = true),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 8.dp,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
                 ) {
                     IconButton(onClick = onOpenSettings) {
                         Icon(
@@ -149,7 +151,7 @@ private fun ThreadCard(thread: Thread, onClick: () -> Unit) {
             contentColor = MaterialTheme.colorScheme.onSurface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = CardDefaults.outlinedCardBorder(enabled = true),
+        border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
     ) {
         Column(Modifier.padding(horizontal = 15.dp, vertical = 14.dp)) {
             Text(

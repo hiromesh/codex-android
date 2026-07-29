@@ -26,6 +26,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -61,7 +62,7 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         // 顶部只由消息列表和返回按钮各自消费状态栏安全区，避免空 TopAppBar 留白。
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -91,7 +92,8 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
                 state = listState,
                 modifier = Modifier.fillMaxSize().statusBarsPadding(),
                 // 为悬浮返回按钮留出空间；比原空 TopAppBar 更紧凑。
-                contentPadding = PaddingValues(start = 16.dp, top = 48.dp, end = 16.dp, bottom = 12.dp),
+                // 与底部输入框的 12dp 外边距共用同一条对齐基线。
+                contentPadding = PaddingValues(start = 12.dp, top = 48.dp, end = 12.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 items(items = items, key = { it.id }) { item ->

@@ -53,7 +53,8 @@ import org.commonmark.parser.Parser
 fun MarkdownMessage(markdown: String, modifier: Modifier = Modifier) {
     val document = remember(markdown) { Parser.builder().build().parse(markdown) }
     SelectionContainer {
-        Column(modifier = modifier.fillMaxWidth()) {
+        // 外层消息气泡决定最大宽度；短回复不应被拉成整行。
+        Column(modifier = modifier) {
             MarkdownBlocks(document)
         }
     }

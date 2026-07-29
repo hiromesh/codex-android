@@ -2,6 +2,7 @@ package com.hiro.codex_android.ui.chat
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,6 +64,7 @@ import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.ModelInfo
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
+import com.hiro.codex_android.ui.theme.GlassBorder
 
 /** 用户消息：右对齐深灰气泡 */
 @Composable
@@ -71,7 +73,7 @@ fun UserMessageBubble(item: ThreadItem.UserMessage) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(14.dp, 14.dp, 4.dp, 14.dp),
-            border = CardDefaults.outlinedCardBorder(enabled = true),
+            border = BorderStroke(1.dp, GlassBorder),
         ) {
             Text(
                 text = item.content.firstOrNull { it.type == "text" }?.text.orEmpty(),
@@ -86,10 +88,19 @@ fun UserMessageBubble(item: ThreadItem.UserMessage) {
 @Composable
 fun AgentMessageItem(item: ThreadItem.AgentMessage, streaming: Boolean) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-        MarkdownMessage(
-            markdown = if (streaming) item.text + " ▍" else item.text,
-            modifier = Modifier.padding(horizontal = 2.dp),
-        )
+        // 正文优先保证可读性：比其他玻璃层更深、更不透明，避免渐变背景吞掉 Markdown 文本。
+        Surface(
+            modifier = Modifier.widthIn(max = 360.dp),
+            color = MaterialTheme.colorScheme.background.copy(alpha = 0.88f),
+            contentColor = MaterialTheme.colorScheme.onBackground,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, GlassBorder),
+        ) {
+            MarkdownMessage(
+                markdown = if (streaming) item.text + " ▍" else item.text,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        }
     }
 }
 
@@ -367,7 +378,8 @@ fun ChatInputBar(
         Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(18.dp),
-            border = CardDefaults.outlinedCardBorder(enabled = true),
+            shadowElevation = 8.dp,
+            border = BorderStroke(1.dp, GlassBorder),
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 3.dp)) {
                 TextField(
@@ -402,13 +414,20 @@ fun ChatInputBar(
                     ContextUsageRing(tokenUsage)
                     Spacer(Modifier.width(10.dp))
                     if (generating) {
-                        // 停止键：白圆 + 深色方块
+                        // 不确定进度环持续旋转，明确告诉用户服务端仍在生成；中心仍可点击停止。
                         FilledIconButton(onClick = onInterrupt, modifier = Modifier.size(36.dp)) {
-                            Box(
-                                Modifier
-                                    .size(12.dp)
-                                    .background(MaterialTheme.colorScheme.onPrimary, RoundedCornerShape(2.dp)),
-                            )
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(24.dp)) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(23.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.65f),
+                                    strokeWidth = 2.dp,
+                                )
+                                Box(
+                                    Modifier
+                                        .size(9.dp)
+                                        .background(MaterialTheme.colorScheme.onPrimary, RoundedCornerShape(2.dp)),
+                                )
+                            }
                         }
                     } else {
                         FilledIconButton(
