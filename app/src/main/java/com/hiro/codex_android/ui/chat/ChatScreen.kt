@@ -24,7 +24,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
@@ -81,10 +84,21 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
     ) { padding ->
         val listState = rememberLazyListState()
         val items = state.items
-        // 新 item 或流式文本增长时滚到底部
+        var followLatest by remember { mutableStateOf(true) }
+
+        // 用户一旦向上翻阅历史，就不再让流式 delta 抢走滚动控制权。
+        LaunchedEffect(listState) {
+            snapshotFlow {
+                val layout = listState.layoutInfo
+                val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisible >= layout.totalItemsCount - 1
+            }.collect { atBottom -> followLatest = atBottom }
+        }
+
+        // 新 item 或流式文本增长时，仅在用户原本位于底部的情况下跟随最新消息。
         val lastLength = (items.lastOrNull() as? ThreadItem.AgentMessage)?.text?.length ?: 0
         LaunchedEffect(items.size, lastLength) {
-            if (items.isNotEmpty()) listState.animateScrollToItem(items.size - 1)
+            if (followLatest && items.isNotEmpty()) listState.scrollToItem(items.size - 1)
         }
         
         Box(Modifier.padding(padding).fillMaxSize()) {
