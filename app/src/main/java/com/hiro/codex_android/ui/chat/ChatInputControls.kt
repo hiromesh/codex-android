@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hiro.codex_android.data.model.ModelInfo
 import com.hiro.codex_android.data.model.TokenUsage
+import com.hiro.codex_android.ui.theme.GlassBorder
+import com.hiro.codex_android.ui.theme.GlassPopup
 import kotlin.math.roundToInt
 
 @Composable
@@ -119,10 +121,10 @@ private fun SelectionMenu(
         onDismissRequest = onDismiss,
         modifier = Modifier.width(280.dp),
         shape = RoundedCornerShape(16.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = GlassPopup,
         tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        shadowElevation = 16.dp,
+        border = BorderStroke(1.dp, GlassBorder),
     ) {
         val effortModel = models.firstOrNull { it.id == effortModelId }
         if (effortModel == null) {

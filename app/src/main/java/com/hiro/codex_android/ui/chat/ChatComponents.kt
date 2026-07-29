@@ -378,6 +378,7 @@ fun ChatInputBar(
     ) {
         Surface(
             color = GlassFillStrong,
+            contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(18.dp),
             shadowElevation = 8.dp,
             border = BorderStroke(1.dp, GlassBorder),
