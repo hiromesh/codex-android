@@ -11,6 +11,11 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -29,9 +34,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
@@ -39,10 +46,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hiro.codex_android.data.ServiceLocator
 import com.hiro.codex_android.data.model.ThreadItem
+import com.hiro.codex_android.ui.theme.GlassFill
 
 /** @param threadIdArg "new" 表示新会话（发第一条消息时才真正 thread/start） */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
+fun ChatScreen(
+    threadIdArg: String,
+    sharedTransitionScope: SharedTransitionScope,
+    animatedVisibilityScope: AnimatedVisibilityScope,
+    onBack: () -> Unit,
+) {
     val vm: ChatViewModel = viewModel(
         factory = ChatViewModel.factory(
             threadId = threadIdArg.takeIf { it != "new" },
@@ -65,8 +79,25 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
         state.error?.let { snackbarHostState.showSnackbar(it) }
     }
 
+    // 让整个聊天页（含输入框）作为卡片的展开目标，避免两套文字在过渡中重叠。
+    val cardExpansionModifier = if (threadIdArg == "new") {
+        Modifier
+    } else {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                sharedContentState = rememberSharedContentState(key = "thread-card-$threadIdArg"),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = androidx.compose.animation.fadeIn(tween(durationMillis = 160, delayMillis = 400)),
+                exit = androidx.compose.animation.fadeOut(tween(durationMillis = 150)),
+                boundsTransform = { _, _ -> tween(durationMillis = 480, easing = FastOutSlowInEasing) },
+            )
+        }
+    }
+
     Scaffold(
-        containerColor = Color.Transparent,
+        modifier = cardExpansionModifier.blur(if (sharedTransitionScope.isTransitionActive) 14.dp else 0.dp),
+        // 与任务卡片同一块半透明玻璃底，不让正文直接透出并和卡片文字重叠。
+        containerColor = if (threadIdArg == "new") Color.Transparent else GlassFill,
         // 顶部只由消息列表和返回按钮各自消费状态栏安全区，避免空 TopAppBar 留白。
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -86,6 +117,19 @@ fun ChatScreen(threadIdArg: String, onBack: () -> Unit) {
         val listState = rememberLazyListState()
         val items = state.items
         var followLatest by remember { mutableStateOf(true) }
+        var initialScrollCompleted by remember(threadIdArg) { mutableStateOf(false) }
+
+        // 从任务卡片展开已有会话时，初始落点固定在最新消息底部。
+        // 这是一次性定位；完成后仍由 followLatest 完全交还滚动控制给用户。
+        LaunchedEffect(state.loading, items.size) {
+            if (!initialScrollCompleted && !state.loading && items.isNotEmpty()) {
+                withFrameNanos { }
+                listState.scrollToItem(items.lastIndex)
+                listState.scrollBy(100_000f)
+                followLatest = true
+                initialScrollCompleted = true
+            }
+        }
 
         // 用户一旦向上翻阅历史，就不再让流式 delta 抢走滚动控制权。
         LaunchedEffect(listState) {

@@ -1,5 +1,8 @@
 package com.hiro.codex_android.ui
 
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -20,27 +23,35 @@ object Routes {
 }
 
 @Composable
+@OptIn(ExperimentalSharedTransitionApi::class)
 fun AppNav() {
     val nav = rememberNavController()
-    NavHost(navController = nav, startDestination = Routes.THREADS) {
-        composable(Routes.THREADS) {
-            ThreadListScreen(
-                onOpenThread = { id -> nav.navigate(Routes.chat(id)) },
-                onNewThread = { nav.navigate(Routes.chat("new")) },
-                onOpenSettings = { nav.navigate(Routes.SETTINGS) },
-            )
-        }
-        composable(
-            route = Routes.CHAT,
-            arguments = listOf(navArgument("threadId") { type = NavType.StringType }),
-        ) { entry ->
-            ChatScreen(
-                threadIdArg = entry.arguments?.getString("threadId") ?: "new",
-                onBack = { nav.popBackStack() },
-            )
-        }
-        composable(Routes.SETTINGS) {
-            SettingsScreen(onBack = { nav.popBackStack() })
+    SharedTransitionLayout {
+        val sharedTransitionScope: SharedTransitionScope = this
+        NavHost(navController = nav, startDestination = Routes.THREADS) {
+            composable(Routes.THREADS) {
+                ThreadListScreen(
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this,
+                    onOpenThread = { id -> nav.navigate(Routes.chat(id)) },
+                    onNewThread = { nav.navigate(Routes.chat("new")) },
+                    onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                )
+            }
+            composable(
+                route = Routes.CHAT,
+                arguments = listOf(navArgument("threadId") { type = NavType.StringType }),
+            ) { entry ->
+                ChatScreen(
+                    threadIdArg = entry.arguments?.getString("threadId") ?: "new",
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this,
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.SETTINGS) {
+                SettingsScreen(onBack = { nav.popBackStack() })
+            }
         }
     }
 }
