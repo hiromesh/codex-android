@@ -70,26 +70,49 @@ fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     var observedGeneration by remember { mutableStateOf(false) }
+    var overlayEnabled by remember { mutableStateOf(false) }
+    var douyinPaused by remember { mutableStateOf(false) }
+    var appInForeground by remember { mutableStateOf(true) }
+    // Returning from the system overlay-permission page does not necessarily change chat state.
+    // This tick retries the same mirrored UI immediately after the user grants it.
+    var overlayPermissionEpoch by remember { mutableStateOf(0) }
 
     DisposableEffect(lifecycleOwner, vm) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.reconcileAfterForeground()
+            when (event) {
+                Lifecycle.Event.ON_START -> appInForeground = true
+                Lifecycle.Event.ON_RESUME -> {
+                    vm.reconcileAfterForeground()
+                    overlayPermissionEpoch += 1
+                }
+                // This is an activity companion for a PiP above this chat, not a permanent
+                // launcher overlay.  Never leave it covering the user's home screen.
+                Lifecycle.Event.ON_STOP -> {
+                    appInForeground = false
+                    ChatOverlayWindow.hide()
+                }
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            ChatOverlayWindow.hide()
+        }
     }
 
     LaunchedEffect(state.error) {
         state.error?.let { snackbarHostState.showSnackbar(it) }
     }
 
-    // 推理/回复中恢复抖音小窗播放；整轮结束后暂停。
-    // 不拉起、不切换到任何第三方应用。
+    // 推理/回复中恢复抖音小窗播放；整轮结束后暂停。聊天镜像浮层始终在小窗上方：
+    // 生成时透出视频，结束时改为实玻璃，避免两层文字混在一起。
     LaunchedEffect(state.generating) {
         if (state.generating) {
             observedGeneration = true
+            douyinPaused = false
             if (DouyinMediaSessionController.hasNotificationAccess(context)) {
-                DouyinMediaSessionController.play(context)
+                DouyinMediaSessionController.playIfPaused(context)
             } else {
                 val result = snackbarHostState.showSnackbar(
                     message = "控制抖音需要授予“通知使用权”",
@@ -99,8 +122,39 @@ fun ChatScreen(
                     DouyinMediaSessionController.openNotificationAccessSettings(context)
                 }
             }
-        } else if (observedGeneration && DouyinMediaSessionController.hasNotificationAccess(context)) {
-            DouyinMediaSessionController.pause(context)
+            overlayEnabled = true
+        } else if (observedGeneration) {
+            if (DouyinMediaSessionController.hasNotificationAccess(context)) {
+                douyinPaused = DouyinMediaSessionController.pause(context)
+            }
+            overlayEnabled = true
+        }
+    }
+
+    // 所有流式 state 更新都只更新同一个 WindowManager 窗口中的 Compose state，不会新建会话。
+    LaunchedEffect(state, overlayEnabled, douyinPaused, overlayPermissionEpoch, appInForeground) {
+        if (!overlayEnabled || !appInForeground) return@LaunchedEffect
+        if (ChatOverlayWindow.canDraw(context)) {
+            ChatOverlayWindow.showOrUpdate(
+                context = context,
+                lifecycleOwner = lifecycleOwner,
+                value = ChatOverlayModel(
+                    state = state,
+                    douyinPaused = douyinPaused,
+                    onSend = vm::send,
+                    onInterrupt = vm::interrupt,
+                    onSelectConfiguration = vm::switchConfiguration,
+                    onApproval = vm::respondApproval,
+                ),
+            )
+        } else if (state.generating) {
+            val result = snackbarHostState.showSnackbar(
+                message = "聊天浮层需要“显示在其他应用上层”权限",
+                actionLabel = "去授权",
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                ChatOverlayWindow.openPermissionSettings(context)
+            }
         }
     }
 

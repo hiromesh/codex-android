@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
@@ -24,8 +25,16 @@ object DouyinMediaSessionController {
         "com.zhiliaoapp.musically",
     )
 
-    fun play(context: Context): Boolean = findDouyinController(context)?.let {
-        it.transportControls.play()
+    /**
+     * 抖音部分版本会把播放中的 transport play 当成“切换播放状态”。
+     * 因此只在会话明确不在播放/缓冲时才发送 play；已经播放时保留原状。
+     */
+    fun playIfPaused(context: Context): Boolean = findDouyinController(context)?.let { controller ->
+        val state = controller.playbackState?.state
+        val alreadyPlaying = state == PlaybackState.STATE_PLAYING ||
+            state == PlaybackState.STATE_BUFFERING ||
+            state == PlaybackState.STATE_CONNECTING
+        if (!alreadyPlaying) controller.transportControls.play()
         true
     } ?: false
 

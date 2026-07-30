@@ -49,6 +49,8 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState(threadId = initialThreadId))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
     private var turnWatchdog: Job? = null
+    /** A resume/read issued before turn/start may return after the user has already sent. */
+    private var turnStartInFlightForThread: String? = null
 
     init {
         if (initialThreadId != null) loadThread(initialThreadId)
@@ -97,7 +99,12 @@ class ChatViewModel(
         if (event.threadId != threadId) return
         when (event) {
             is CodexEvent.TurnStarted ->
-                _uiState.update { it.copy(generating = true, currentTurnId = event.turnId) }
+                _uiState.update { state ->
+                    // Notifications from a resumed WebSocket can contain the previous turn.
+                    // Once turn/start gave us an id, only that turn may control the UI state.
+                    if (state.currentTurnId != null && state.currentTurnId != event.turnId) state
+                    else state.copy(generating = true, currentTurnId = event.turnId)
+                }
 
             is CodexEvent.ItemStarted -> appendItem(event.item)
 
@@ -110,8 +117,10 @@ class ChatViewModel(
             is CodexEvent.ItemCompleted -> replaceItem(event.item)
 
             is CodexEvent.TurnCompleted ->
-                _uiState.update {
-                    it.copy(
+                _uiState.update { state ->
+                    // A delayed completion from an older turn must never pause the media or turn
+                    // the new reply into an apparent completion.
+                    if (!state.generating || state.currentTurnId != event.turnId) state else state.copy(
                         generating = false,
                         currentTurnId = null,
                         pendingApproval = null,
@@ -160,12 +169,15 @@ class ChatViewModel(
                 }
                 submittedThreadId = threadId
                 startTurnWatchdog(threadId)
+                turnStartInFlightForThread = threadId
                 val turn = repo.startTurn(threadId, listOf(Content("text", trimmed)))
+                turnStartInFlightForThread = null
                 _uiState.update {
-                    // 正常情况会由 turn/started 通知填入；如果通知稍晚，用 RPC 结果兜底。
-                    if (it.generating && it.currentTurnId == null) it.copy(currentTurnId = turn.id) else it
+                    // RPC 返回的 id 是当前发出的这轮的权威身份；覆盖可能迟到的旧 started。
+                    if (it.generating) it.copy(currentTurnId = turn.id) else it
                 }
             } catch (e: Exception) {
+                turnStartInFlightForThread = null
                 // 超时/断线时服务端可能已经收到 turn/start，不能直接把它当成失败。
                 // watchdog 会 read 全量会话，确认服务端最终状态。
                 if (submittedThreadId != null && !e.message.orEmpty().startsWith("Codex 协议错误")) {
@@ -340,6 +352,19 @@ class ChatViewModel(
         val activeTurn = thread.turns.lastOrNull { it.status == "inProgress" }
         val lastError = thread.turns.lastOrNull()?.takeIf { it.status == "failed" }?.error
         _uiState.update { state ->
+            val currentTurnId = state.currentTurnId
+            // `thread/read` is a snapshot.  If it was requested before the new turn was created,
+            // it naturally reports no active turn.  Do not let that old snapshot flip a newer
+            // local send back to idle (which also used to reverse the Douyin play/pause effect).
+            val snapshotContainsCurrentTurn = currentTurnId != null &&
+                thread.turns.any { it.id == currentTurnId }
+            if (
+                state.generating &&
+                (turnStartInFlightForThread == thread.id ||
+                    (currentTurnId != null && activeTurn?.id != currentTurnId && !snapshotContainsCurrentTurn))
+            ) {
+                return@update state
+            }
             if (activeTurn != null) {
                 state.copy(
                     title = thread.name ?: thread.preview.ifBlank { state.title },

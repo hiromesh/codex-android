@@ -28,9 +28,13 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun CodexandroidTheme(content: @Composable () -> Unit) {
     val view = LocalView.current
-    if (!view.isInEditMode) {
+    // The external chat overlay is hosted directly by WindowManager and therefore has an
+    // application Context rather than an Activity.  The Material theme is still useful there;
+    // only system-bar configuration is Activity-specific.
+    val activity = view.context as? Activity
+    if (!view.isInEditMode && activity != null) {
         SideEffect {
-            val window = (view.context as Activity).window
+            val window = activity.window
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
             WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = false
         }
