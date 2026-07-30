@@ -117,7 +117,13 @@ class FakeCodexRepository : CodexRepository {
 
     override suspend fun updateThreadSettings(threadId: String, model: String?, effort: String?) {
         delay(100)
-        threads.replaceAll { if (it.id == threadId && model != null) it.copy(model = model) else it }
+        threads.replaceAll { thread ->
+            if (thread.id == threadId) {
+                thread.copy(model = model ?: thread.model, effort = effort ?: thread.effort)
+            } else {
+                thread
+            }
+        }
     }
 
     // ── 脚本 ─────────────────────────────────────────────────────────────

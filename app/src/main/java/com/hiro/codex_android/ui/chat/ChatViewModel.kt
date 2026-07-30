@@ -72,14 +72,18 @@ class ChatViewModel(
             runCatching {
                 val resumed = repo.resumeThread(threadId)
                 val loaded = repo.readThread(threadId, includeTurns = true)
-                // 少数旧服务端的 read 响应不带模型，保留 resume 的会话设置。
-                if (loaded.model == null) loaded.copy(model = resumed.model) else loaded
+                // 少数旧服务端的 read 响应不带会话设置，保留 resume 的返回。
+                loaded.copy(
+                    model = loaded.model ?: resumed.model,
+                    effort = loaded.effort ?: resumed.effort,
+                )
             }.onSuccess { thread ->
                     _uiState.update {
                         it.copy(
                             loading = false,
                             title = thread.name ?: thread.preview.ifBlank { "会话" },
                             model = thread.model ?: it.model,
+                            effort = thread.effort ?: it.effort,
                             items = thread.turns.flatMap(Turn::items),
                         )
                     }
@@ -192,7 +196,10 @@ class ChatViewModel(
             runCatching {
                 val resumed = repo.resumeThread(threadId)
                 val loaded = repo.readThread(threadId, includeTurns = true)
-                if (loaded.model == null) loaded.copy(model = resumed.model) else loaded
+                loaded.copy(
+                    model = loaded.model ?: resumed.model,
+                    effort = loaded.effort ?: resumed.effort,
+                )
             }.onSuccess(::applyServerThread)
         }
     }
@@ -337,6 +344,7 @@ class ChatViewModel(
                 state.copy(
                     title = thread.name ?: thread.preview.ifBlank { state.title },
                     model = thread.model ?: state.model,
+                    effort = thread.effort ?: state.effort,
                     generating = true,
                     currentTurnId = activeTurn.id,
                 )
@@ -344,6 +352,7 @@ class ChatViewModel(
                 state.copy(
                     title = thread.name ?: thread.preview.ifBlank { state.title },
                     model = thread.model ?: state.model,
+                    effort = thread.effort ?: state.effort,
                     items = thread.turns.flatMap(Turn::items),
                     generating = false,
                     currentTurnId = null,

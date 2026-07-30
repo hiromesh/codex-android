@@ -96,9 +96,8 @@ class WebSocketCodexRepository(
     override suspend fun startThread(model: String?): Thread {
         val params = JSONObject().also { if (model != null) it.put("model", model) }
         val result = request("thread/start", params)
-        return parseThread(result.optJSONObject("thread") ?: throw protocolError("thread/start missing thread"))
-            .let { thread ->
-                val resolved = if (thread.model == null) thread.copy(model = result.nullableString("model")) else thread
+        return threadFromResult(result, "thread/start missing thread")
+            .let { resolved ->
                 currentThreadId = resolved.id
                 attachedThreadId = resolved.id
                 resolved
@@ -108,9 +107,8 @@ class WebSocketCodexRepository(
     override suspend fun resumeThread(threadId: String, model: String?): Thread {
         val params = JSONObject().put("threadId", threadId).also { if (model != null) it.put("model", model) }
         val result = request("thread/resume", params)
-        return parseThread(result.optJSONObject("thread") ?: throw protocolError("thread/resume missing thread"))
-            .let { thread ->
-                val resolved = if (thread.model == null) thread.copy(model = result.nullableString("model")) else thread
+        return threadFromResult(result, "thread/resume missing thread")
+            .let { resolved ->
                 currentThreadId = resolved.id
                 attachedThreadId = resolved.id
                 resolved
@@ -467,8 +465,29 @@ class WebSocketCodexRepository(
         status = ThreadStatus(value.optJSONObject("status")?.optString("type") ?: value.optString("status", "idle")),
         cwd = value.optString("cwd"),
         model = value.nullableString("model"),
+        effort = value.threadEffort(),
         turns = value.optJSONArray("turns").objects().map(::parseTurn),
     )
+
+    /**
+     * app-server 的不同版本将会话推理档位分别命名为 effort / reasoningEffort，
+     * 少数版本还会将它收在 config 内。读取时兼容这些返回，写入仍遵循 API 的 effort。
+     */
+    private fun JSONObject.threadEffort(): String? = sequenceOf(
+        nullableString("effort"),
+        nullableString("reasoningEffort"),
+        nullableString("modelReasoningEffort"),
+        optJSONObject("config")?.nullableString("effort"),
+        optJSONObject("config")?.nullableString("reasoningEffort"),
+    ).firstOrNull { !it.isNullOrBlank() }
+
+    private fun threadFromResult(result: JSONObject, missingThreadMessage: String): Thread {
+        val thread = parseThread(result.optJSONObject("thread") ?: throw protocolError(missingThreadMessage))
+        return thread.copy(
+            model = thread.model ?: result.nullableString("model"),
+            effort = thread.effort ?: result.threadEffort(),
+        )
+    }
 
     private fun parseTurn(value: JSONObject): Turn = Turn(
         id = value.optString("id"),

@@ -16,6 +16,8 @@ data class Thread(
     val status: ThreadStatus = ThreadStatus("idle"),
     val cwd: String = "",
     val model: String? = null,
+    /** 会话级推理档位；历史会话未返回时才由 UI 保留其当前默认值。 */
+    val effort: String? = null,
     val turns: List<Turn> = emptyList(),
 )
 
