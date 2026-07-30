@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
@@ -66,6 +68,8 @@ fun ChatScreen(
     val state by vm.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+    var observedGeneration by remember { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner, vm) {
         val observer = LifecycleEventObserver { _, event ->
@@ -77,6 +81,27 @@ fun ChatScreen(
 
     LaunchedEffect(state.error) {
         state.error?.let { snackbarHostState.showSnackbar(it) }
+    }
+
+    // 推理/回复中恢复抖音小窗播放；整轮结束后暂停。
+    // 不拉起、不切换到任何第三方应用。
+    LaunchedEffect(state.generating) {
+        if (state.generating) {
+            observedGeneration = true
+            if (DouyinMediaSessionController.hasNotificationAccess(context)) {
+                DouyinMediaSessionController.play(context)
+            } else {
+                val result = snackbarHostState.showSnackbar(
+                    message = "控制抖音需要授予“通知使用权”",
+                    actionLabel = "去授权",
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    DouyinMediaSessionController.openNotificationAccessSettings(context)
+                }
+            }
+        } else if (observedGeneration && DouyinMediaSessionController.hasNotificationAccess(context)) {
+            DouyinMediaSessionController.pause(context)
+        }
     }
 
     // 让整个聊天页（含输入框）作为卡片的展开目标，避免两套文字在过渡中重叠。
