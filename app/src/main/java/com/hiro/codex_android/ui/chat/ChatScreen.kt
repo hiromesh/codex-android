@@ -1,5 +1,9 @@
 package com.hiro.codex_android.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -38,8 +42,10 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -61,18 +67,35 @@ fun ChatScreen(
         factory = ChatViewModel.factory(
             threadId = threadIdArg.takeIf { it != "new" },
             repo = ServiceLocator.repository,
+            settingsStore = ServiceLocator.settingsStore,
+            streamingAsrClient = ServiceLocator.streamingAsrClient,
         ),
     )
     val state by vm.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) vm.startAsr()
+        else vm.reportError("需要麦克风权限才能进行语音识别")
+    }
 
     DisposableEffect(lifecycleOwner, vm) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.reconcileAfterForeground()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> vm.reconcileAfterForeground()
+                // 不在后台继续占用麦克风，保护隐私并避免后台录音限制导致异常。
+                Lifecycle.Event.ON_PAUSE -> vm.stopAsr()
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.stopAsr()
+        }
     }
 
     LaunchedEffect(state.error) {
@@ -109,6 +132,21 @@ fun ChatScreen(
                 models = state.availableModels,
                 onSelectConfiguration = vm::switchConfiguration,
                 tokenUsage = state.tokenUsage,
+                asrTranscript = state.asrTranscript,
+                asrRecording = state.asrRecording,
+                onToggleAsr = {
+                    if (state.asrRecording) {
+                        vm.stopAsr()
+                    } else if (
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        vm.startAsr()
+                    } else {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onStopAsr = vm::stopAsr,
                 onSend = vm::send,
                 onInterrupt = vm::interrupt,
             )

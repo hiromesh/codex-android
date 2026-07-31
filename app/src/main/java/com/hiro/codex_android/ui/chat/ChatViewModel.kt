@@ -7,6 +7,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.hiro.codex_android.data.CodexEvent
 import com.hiro.codex_android.data.CodexRepository
+import com.hiro.codex_android.data.SettingsStore
+import com.hiro.codex_android.data.StreamingAsrClient
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.Content
 import com.hiro.codex_android.data.model.ModelInfo
@@ -38,17 +40,24 @@ data class ChatUiState(
     val availableModels: List<ModelInfo> = emptyList(),
     /** 上下文占用，来自 thread/tokenUsage/updated */
     val tokenUsage: TokenUsage? = null,
+    /** 本次语音会话的服务端全文结果；输入框以它覆盖上一次临时转写，避免重复拼接。 */
+    val asrTranscript: String? = null,
+    val asrRecording: Boolean = false,
     val error: String? = null,
 )
 
 class ChatViewModel(
     initialThreadId: String?,
     private val repo: CodexRepository,
+    private val settingsStore: SettingsStore,
+    private val streamingAsrClient: StreamingAsrClient,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState(threadId = initialThreadId))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
     private var turnWatchdog: Job? = null
+    private var asrSession: StreamingAsrClient.Session? = null
+    private var asrSessionId: String? = null
 
     init {
         if (initialThreadId != null) loadThread(initialThreadId)
@@ -187,6 +196,46 @@ class ChatViewModel(
             runCatching { repo.interruptTurn(threadId, turnId) }
                 .onFailure { e -> _uiState.update { it.copy(error = "中断失败：${e.message}") } }
         }
+    }
+
+    /** 开始将麦克风 PCM 以 200ms 分包发送至 ASR；权限由界面层在调用前申请。 */
+    fun startAsr() {
+        if (_uiState.value.asrRecording) return
+        val sessionId = UUID.randomUUID().toString()
+        asrSessionId = sessionId
+        try {
+            asrSession = streamingAsrClient.start(
+                settings = settingsStore.settings.value,
+                onTranscript = { text ->
+                    if (asrSessionId == sessionId) {
+                        _uiState.update { it.copy(asrTranscript = text) }
+                    }
+                },
+                onFailure = { message ->
+                    if (asrSessionId == sessionId) {
+                        asrSession = null
+                        asrSessionId = null
+                        _uiState.update { it.copy(asrRecording = false, error = message) }
+                    }
+                },
+            )
+            _uiState.update { it.copy(asrRecording = true, asrTranscript = null, error = null) }
+        } catch (error: IllegalArgumentException) {
+            asrSessionId = null
+            _uiState.update { it.copy(error = error.message) }
+        }
+    }
+
+    /** 立即停麦克风并发送 ASR 协议的最后一包，最终文本仍可在短暂回包后写入输入框。 */
+    fun stopAsr() {
+        val activeSession = asrSession ?: return
+        asrSession = null
+        _uiState.update { it.copy(asrRecording = false) }
+        activeSession.stop()
+    }
+
+    fun reportError(message: String) {
+        _uiState.update { it.copy(error = message) }
     }
 
     /** 从锁屏/后台回来时主动对账；后台期间 WebSocket 的通知不保证能保活或重放。 */
@@ -366,14 +415,22 @@ class ChatViewModel(
 
     private fun localId(): String = "local-${UUID.randomUUID()}"
 
+    override fun onCleared() {
+        stopAsr()
+        turnWatchdog?.cancel()
+        super.onCleared()
+    }
+
     companion object {
         private const val TURN_RECONCILE_INTERVAL_MS = 15_000L
 
         fun factory(
             threadId: String?,
             repo: CodexRepository,
+            settingsStore: SettingsStore,
+            streamingAsrClient: StreamingAsrClient,
         ): ViewModelProvider.Factory = viewModelFactory {
-            initializer { ChatViewModel(threadId, repo) }
+            initializer { ChatViewModel(threadId, repo, settingsStore, streamingAsrClient) }
         }
     }
 }

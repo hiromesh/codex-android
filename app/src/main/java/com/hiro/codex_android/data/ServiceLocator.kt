@@ -9,6 +9,7 @@ import android.content.Context
 object ServiceLocator {
 
     val repository: CodexRepository by lazy { WebSocketCodexRepository(settingsStore) }
+    val streamingAsrClient: StreamingAsrClient by lazy { StreamingAsrClient() }
 
     lateinit var settingsStore: SettingsStore
         private set

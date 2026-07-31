@@ -83,6 +83,46 @@ fun SettingsScreen(onBack: () -> Unit) {
                 shape = MaterialTheme.shapes.medium,
             )
 
+            Text(
+                text = "语音识别（火山引擎）",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            OutlinedTextField(
+                value = state.asrUrl,
+                onValueChange = vm::setAsrUrl,
+                label = { Text("ASR 地址 (WebSocket)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+            )
+            OutlinedTextField(
+                value = state.asrAppKey,
+                onValueChange = vm::setAsrAppKey,
+                label = { Text("App ID") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+            )
+            OutlinedTextField(
+                value = state.asrAccessKey,
+                onValueChange = vm::setAsrAccessKey,
+                label = { Text("Access Token") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+            )
+            OutlinedTextField(
+                value = state.asrResourceId,
+                onValueChange = vm::setAsrResourceId,
+                label = { Text("ASR 资源 ID") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+            )
+
             Spacer(Modifier.height(4.dp))
             Button(
                 onClick = {

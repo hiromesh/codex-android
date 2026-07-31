@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
@@ -47,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -393,7 +397,7 @@ fun ApprovalDialog(
 
 /**
  * 底部输入区：一个圆角容器，上行文本框，
- * 下行左为模型选择（§3.8/§3.9），右为上下文占用环（tokenUsage/updated）+ 发送/停止。
+ * 下行左为模型选择（§3.8/§3.9），中间是语音识别，右侧为上下文占用环（tokenUsage/updated）+ 发送/停止。
  */
 @Composable
 fun ChatInputBar(
@@ -403,12 +407,30 @@ fun ChatInputBar(
     models: List<ModelInfo>,
     onSelectConfiguration: (String, String) -> Unit,
     tokenUsage: TokenUsage?,
+    asrTranscript: String?,
+    asrRecording: Boolean,
+    onToggleAsr: () -> Unit,
+    onStopAsr: () -> Unit,
     onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
     val inputState = rememberTextFieldState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    // ASR 的 result.text 是“本次完整识别结果”而不是 delta。记录启动前文本后每次替换尾部，
+    // 既能实时上屏，也不会因服务端重复返回全文而重复追加。
+    var voicePrefix by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(asrRecording) {
+        if (asrRecording) voicePrefix = inputState.text.toString()
+    }
+    LaunchedEffect(asrTranscript) {
+        val prefix = voicePrefix
+        if (prefix != null && asrTranscript != null) {
+            inputState.edit {
+                replace(0, length, prefix + asrTranscript)
+            }
+        }
+    }
     // 输入区域与控制栏必须使用同一张底，避免 Material TextField 自己的 container 色形成色块。
     val inputBackground = Color(0xFF1B2939)
     Column(
@@ -457,6 +479,30 @@ fun ChatInputBar(
                         modifier = Modifier.padding(start = 8.dp),
                     )
                     Spacer(Modifier.weight(1f))
+                    // 与 Token 用量环并排，同为 30dp 圆形，作为一组紧凑的状态/输入控制。
+                    Surface(
+                        color = if (asrRecording) MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
+                        else Color.Transparent,
+                        contentColor = if (asrRecording) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        shape = CircleShape,
+                        border = BorderStroke(
+                            1.dp,
+                            if (asrRecording) MaterialTheme.colorScheme.error.copy(alpha = 0.42f) else GlassBorder,
+                        ),
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clickable(onClick = onToggleAsr),
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = Icons.Default.GraphicEq,
+                                contentDescription = if (asrRecording) "停止语音识别" else "开始语音识别",
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(6.dp))
                     ContextUsageRing(tokenUsage)
                     Spacer(Modifier.width(10.dp))
                     if (generating) {
@@ -479,6 +525,9 @@ fun ChatInputBar(
                     } else {
                         FilledIconButton(
                             onClick = {
+                                // 发送时不接收停麦克风后的最终回包，确保当前输入就是被发出的内容。
+                                onStopAsr()
+                                voicePrefix = null
                                 val message = inputState.text.toString().trim()
                                 if (message.isNotEmpty()) {
                                     onSend(message)
