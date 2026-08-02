@@ -13,7 +13,8 @@ android {
 
     defaultConfig {
         applicationId = "com.hiro.codex_android"
-        minSdk = 35
+        // AudioRecord.Builder / READ_BLOCKING 的平台下限为 API 23（Android 6.0）。
+        minSdk = 23
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
