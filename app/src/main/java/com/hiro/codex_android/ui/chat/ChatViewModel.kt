@@ -16,6 +16,7 @@ import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
 import com.hiro.codex_android.data.model.Thread
 import com.hiro.codex_android.data.model.Turn
+import com.hiro.codex_android.data.tts.VolcengineTtsManager
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +52,7 @@ class ChatViewModel(
     private val repo: CodexRepository,
     private val settingsStore: SettingsStore,
     private val streamingAsrClient: StreamingAsrClient,
+    private val ttsManager: VolcengineTtsManager,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState(threadId = initialThreadId))
@@ -110,15 +112,28 @@ class ChatViewModel(
 
             is CodexEvent.ItemStarted -> appendItem(event.item)
 
-            is CodexEvent.AgentMessageDelta -> appendDelta(event.itemId, event.delta)
+            // TTS 只朗读回答正文：正文 delta 边到边合成，工具/思考等其他事件不喂。
+            is CodexEvent.AgentMessageDelta -> {
+                appendDelta(event.itemId, event.delta)
+                ttsManager.onAgentDelta(event.delta)
+            }
 
             is CodexEvent.ReasoningSummaryDelta ->
                 appendReasoningDelta(event.itemId, event.summaryIndex, event.delta)
 
             // item/completed 里是完整 item，直接替换以校对（§4 处理要点）
-            is CodexEvent.ItemCompleted -> replaceItem(event.item)
+            is CodexEvent.ItemCompleted -> {
+                replaceItem(event.item)
+                if (event.item is ThreadItem.AgentMessage) ttsManager.onAgentMessageFinished()
+            }
 
-            is CodexEvent.TurnCompleted ->
+            is CodexEvent.TurnCompleted -> {
+                if (event.status == "completed") {
+                    // 兜底：个别服务端可能漏发 agentMessage 的 item/completed。
+                    ttsManager.onAgentMessageFinished()
+                } else {
+                    ttsManager.stop()
+                }
                 _uiState.update {
                     it.copy(
                         generating = false,
@@ -127,6 +142,7 @@ class ChatViewModel(
                         error = event.error,
                     )
                 }
+            }
 
             is CodexEvent.TokenUsageUpdated ->
                 _uiState.update { it.copy(tokenUsage = event.usage) }
@@ -134,7 +150,8 @@ class ChatViewModel(
             is CodexEvent.ThreadReconciled -> applyServerThread(event.thread)
 
             // 多端同步：当前会话被 web/其他设备删除或归档
-            is CodexEvent.ThreadDeleted ->
+            is CodexEvent.ThreadDeleted -> {
+                ttsManager.stop()
                 _uiState.update {
                     it.copy(
                         generating = false,
@@ -143,8 +160,10 @@ class ChatViewModel(
                         error = "会话已被其他设备删除",
                     )
                 }
+            }
 
-            is CodexEvent.ThreadArchived ->
+            is CodexEvent.ThreadArchived -> {
+                ttsManager.stop()
                 _uiState.update {
                     it.copy(
                         generating = false,
@@ -153,6 +172,7 @@ class ChatViewModel(
                         error = "会话已被其他设备归档",
                     )
                 }
+            }
 
             is CodexEvent.ApprovalRequest ->
                 _uiState.update { it.copy(pendingApproval = event) }
@@ -163,6 +183,7 @@ class ChatViewModel(
     fun send(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _uiState.value.generating) return
+        ttsManager.stop()
         viewModelScope.launch {
             var submittedThreadId: String? = null
             appendItem(ThreadItem.UserMessage(localId(), listOf(Content("text", trimmed))))
@@ -213,6 +234,7 @@ class ChatViewModel(
         val state = _uiState.value
         val threadId = state.threadId ?: return
         val turnId = state.currentTurnId ?: return
+        ttsManager.stop()
         viewModelScope.launch {
             runCatching { repo.interruptTurn(threadId, turnId) }
                 .onFailure { e -> _uiState.update { it.copy(error = "中断失败：${e.message}") } }
@@ -438,6 +460,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         stopAsr()
+        ttsManager.stop()
         turnWatchdog?.cancel()
         super.onCleared()
     }
@@ -450,8 +473,9 @@ class ChatViewModel(
             repo: CodexRepository,
             settingsStore: SettingsStore,
             streamingAsrClient: StreamingAsrClient,
+            ttsManager: VolcengineTtsManager,
         ): ViewModelProvider.Factory = viewModelFactory {
-            initializer { ChatViewModel(threadId, repo, settingsStore, streamingAsrClient) }
+            initializer { ChatViewModel(threadId, repo, settingsStore, streamingAsrClient, ttsManager) }
         }
     }
 }

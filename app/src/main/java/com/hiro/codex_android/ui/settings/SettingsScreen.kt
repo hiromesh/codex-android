@@ -2,6 +2,7 @@ package com.hiro.codex_android.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -122,6 +125,76 @@ fun SettingsScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.medium,
             )
+
+            Text(
+                text = "语音合成（TTS）",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "启用语音播报",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "流式朗读 agent 的回答（工具调用等不读）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.ttsEnabled, onCheckedChange = vm::setTtsEnabled)
+            }
+            if (state.ttsEnabled) {
+                OutlinedTextField(
+                    value = state.ttsUrl,
+                    onValueChange = vm::setTtsUrl,
+                    label = { Text("TTS 地址 (WebSocket)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                OutlinedTextField(
+                    value = state.ttsApiKey,
+                    onValueChange = vm::setTtsApiKey,
+                    label = { Text("API Key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                OutlinedTextField(
+                    value = state.ttsResourceId,
+                    onValueChange = vm::setTtsResourceId,
+                    label = { Text("TTS 资源 ID") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                OutlinedTextField(
+                    value = state.ttsSpeaker,
+                    onValueChange = vm::setTtsSpeaker,
+                    label = { Text("音色（发音人 ID）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                Text(
+                    text = "语速：${state.ttsSpeechRate}（-50 ~ 100，0 为原速）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Slider(
+                    value = state.ttsSpeechRate.toFloat(),
+                    onValueChange = { vm.setTtsSpeechRate(it.toInt()) },
+                    valueRange = -50f..100f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             Spacer(Modifier.height(4.dp))
             Button(

@@ -18,6 +18,12 @@ data class SettingsUiState(
     val asrAppKey: String = "",
     val asrAccessKey: String = "",
     val asrResourceId: String = AppSettings.DEFAULT_ASR_RESOURCE_ID,
+    val ttsEnabled: Boolean = false,
+    val ttsUrl: String = AppSettings.DEFAULT_TTS_URL,
+    val ttsApiKey: String = "",
+    val ttsResourceId: String = AppSettings.DEFAULT_TTS_RESOURCE_ID,
+    val ttsSpeaker: String = AppSettings.DEFAULT_TTS_SPEAKER,
+    val ttsSpeechRate: Int = 0,
     val saved: Boolean = false,
 )
 
@@ -32,6 +38,12 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 asrAppKey = it.asrAppKey,
                 asrAccessKey = it.asrAccessKey,
                 asrResourceId = it.asrResourceId,
+                ttsEnabled = it.ttsEnabled,
+                ttsUrl = it.ttsUrl,
+                ttsApiKey = it.ttsApiKey,
+                ttsResourceId = it.ttsResourceId,
+                ttsSpeaker = it.ttsSpeaker,
+                ttsSpeechRate = it.ttsSpeechRate,
             )
         },
     )
@@ -43,6 +55,13 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
     fun setAsrAppKey(key: String) = _uiState.update { it.copy(asrAppKey = key, saved = false) }
     fun setAsrAccessKey(key: String) = _uiState.update { it.copy(asrAccessKey = key, saved = false) }
     fun setAsrResourceId(id: String) = _uiState.update { it.copy(asrResourceId = id, saved = false) }
+    fun setTtsEnabled(enabled: Boolean) = _uiState.update { it.copy(ttsEnabled = enabled, saved = false) }
+    fun setTtsUrl(url: String) = _uiState.update { it.copy(ttsUrl = url, saved = false) }
+    fun setTtsApiKey(key: String) = _uiState.update { it.copy(ttsApiKey = key, saved = false) }
+    fun setTtsResourceId(id: String) = _uiState.update { it.copy(ttsResourceId = id, saved = false) }
+    fun setTtsSpeaker(speaker: String) = _uiState.update { it.copy(ttsSpeaker = speaker, saved = false) }
+    fun setTtsSpeechRate(rate: Int) =
+        _uiState.update { it.copy(ttsSpeechRate = rate.coerceIn(-50, 100), saved = false) }
 
     fun save() {
         val s = _uiState.value
@@ -54,6 +73,12 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 asrAppKey = s.asrAppKey.trim(),
                 asrAccessKey = s.asrAccessKey.trim(),
                 asrResourceId = s.asrResourceId.trim().ifBlank { AppSettings.DEFAULT_ASR_RESOURCE_ID },
+                ttsEnabled = s.ttsEnabled,
+                ttsUrl = s.ttsUrl.trim().ifBlank { AppSettings.DEFAULT_TTS_URL },
+                ttsApiKey = s.ttsApiKey.trim(),
+                ttsResourceId = s.ttsResourceId.trim().ifBlank { AppSettings.DEFAULT_TTS_RESOURCE_ID },
+                ttsSpeaker = s.ttsSpeaker.trim().ifBlank { AppSettings.DEFAULT_TTS_SPEAKER },
+                ttsSpeechRate = s.ttsSpeechRate,
             ),
         )
         _uiState.update { it.copy(saved = true) }

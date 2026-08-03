@@ -52,7 +52,16 @@ export function ChatInputBar(props: InputBarProps) {
         placeholder="给 Codex 发消息…"
         value={text}
         rows={1}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          const next = e.target.value;
+          // 用户手动输入时立即停掉 ASR，防止识别结果覆盖手动输入；
+          // 语义与发送按钮一致（onStopAsr + 丢弃语音前缀）。
+          if (asrRecording) {
+            props.onStopAsr();
+            setVoicePrefix(null);
+          }
+          setText(next);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();

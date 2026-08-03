@@ -69,6 +69,7 @@ fun ChatScreen(
             repo = ServiceLocator.repository,
             settingsStore = ServiceLocator.settingsStore,
             streamingAsrClient = ServiceLocator.streamingAsrClient,
+            ttsManager = ServiceLocator.ttsManager,
         ),
     )
     val state by vm.uiState.collectAsState()

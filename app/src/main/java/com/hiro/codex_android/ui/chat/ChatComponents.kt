@@ -431,6 +431,16 @@ fun ChatInputBar(
             }
         }
     }
+    // 手动输入时停掉 ASR：任何非 ASR 注入（prefix+transcript）的文本变化都视为手动输入，
+    // 语义与发送按钮一致（onStopAsr + 丢弃语音前缀），防止识别结果覆盖手动输入。
+    LaunchedEffect(inputState.text) {
+        val prefix = voicePrefix
+        val transcript = asrTranscript
+        if (asrRecording && !(prefix != null && transcript != null && inputState.text == prefix + transcript)) {
+            onStopAsr()
+            voicePrefix = null
+        }
+    }
     // 输入区域与控制栏必须使用同一张底，避免 Material TextField 自己的 container 色形成色块。
     val inputBackground = Color(0xFF1B2939)
     Column(
