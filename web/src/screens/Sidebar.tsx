@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useSyncExternalStore } from "react";
 import { ThreadListStore } from "../stores";
 import { Thread } from "../types";
-import { PlusIcon, SettingsIcon } from "../components/icons";
+import { PlusIcon, SettingsIcon, TrashIcon } from "../components/icons";
 import { useRelativeTime } from "../components/items";
 
 export function Sidebar({
@@ -72,16 +72,23 @@ export function Sidebar({
       {deleteTarget && (
         <div className="dialog-overlay" onClick={() => setDeleteTarget(null)}>
           <div className="dialog-card" role="alertdialog" aria-label="删除会话" onClick={(e) => e.stopPropagation()}>
-            <div className="dialog-title">删除会话？</div>
+            <div className="dialog-icon">
+              <TrashIcon size={19} />
+            </div>
+            <div className="dialog-title">删除这个会话？</div>
+            <div className="dialog-desc">会话记录将被永久删除，无法恢复。</div>
             <div className="dialog-subject">
               {deleteTarget.name ?? (deleteTarget.preview || "Untitled task")}
             </div>
-            <button className="btn dialog-btn dialog-btn-danger" onClick={() => confirmDelete(deleteTarget)}>
-              删除
-            </button>
-            <button className="btn dialog-btn" onClick={() => setDeleteTarget(null)}>
-              取消
-            </button>
+            <div className="dialog-actions">
+              <button className="btn" onClick={() => setDeleteTarget(null)}>
+                取消
+              </button>
+              <button className="btn dialog-btn-danger" onClick={() => confirmDelete(deleteTarget)}>
+                <TrashIcon size={14} />
+                删除
+              </button>
+            </div>
           </div>
         </div>
       )}
