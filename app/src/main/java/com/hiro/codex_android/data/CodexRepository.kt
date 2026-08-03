@@ -71,6 +71,12 @@ sealed interface CodexEvent {
         val cwd: String,
         val reason: String,
     ) : CodexEvent
+
+    /** thread/deleted：会话被彻底删除（可能来自其他设备），本地移除并停止展示 */
+    data class ThreadDeleted(override val threadId: String) : CodexEvent
+
+    /** thread/archived：会话被归档（可能来自其他设备），从默认列表移除 */
+    data class ThreadArchived(override val threadId: String) : CodexEvent
 }
 
 data class ThreadPage(val data: List<Thread>, val nextCursor: String?)
@@ -99,6 +105,12 @@ interface CodexRepository {
 
     /** §3.5 thread/read，includeTurns=true 返回每轮 items 用于重建聊天界面 */
     suspend fun readThread(threadId: String, includeTurns: Boolean = true): Thread
+
+    /** §3.10 thread/archive：归档会话（软删除，列表默认隐藏，可 unarchive 恢复） */
+    suspend fun archiveThread(threadId: String)
+
+    /** §3.10 thread/delete：彻底删除会话（不可恢复；服务端需 rust-v0.140.0+） */
+    suspend fun deleteThread(threadId: String)
 
     /** §3.6 turn/start，发消息 */
     suspend fun startTurn(threadId: String, input: List<Content>): Turn

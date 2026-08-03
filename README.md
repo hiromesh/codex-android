@@ -73,3 +73,16 @@ app/src/main/java/com/hiro/codex_android/
 ├── ui/settings/ # Server settings
 └── ui/theme/    # Compose theme and styling
 ```
+
+## Web 版本
+
+[web/](web/) 是同一 app-server 的桌面网页客户端（前后端一体 TypeScript 单仓库）：
+
+```bash
+cd web
+npm install
+npm run dev      # 开发：http://localhost:5175
+npm run build && npm start   # 生产：单端口 http://localhost:3000
+```
+
+功能与安卓端完全等价（会话列表、流式 Markdown、审批、模型/档位切换、token 占用、语音输入、断线对账），桌面布局为左侧会话栏 + 主聊天区。由于浏览器 WebSocket 不能自定义请求头，服务端同时代理 `/ws/codex`（注入 Bearer token）与 `/ws/asr`（注入火山 ASR 鉴权头）。详见 [web/README.md](web/README.md)。

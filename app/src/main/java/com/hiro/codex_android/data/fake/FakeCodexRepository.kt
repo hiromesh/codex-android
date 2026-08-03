@@ -37,6 +37,7 @@ class FakeCodexRepository : CodexRepository {
 
     private val threads = mutableListOf<Thread>()
     private val turnJobs = mutableMapOf<String, Job>()
+    private val turnThreads = mutableMapOf<String, String>()
     private val pendingApprovals = mutableMapOf<Int, CompletableDeferred<ApprovalDecision>>()
     private var nextApprovalId = 100
 
@@ -83,12 +84,26 @@ class FakeCodexRepository : CodexRepository {
     override suspend fun startTurn(threadId: String, input: List<Content>): Turn {
         val turn = Turn(id = uuid(), status = "inProgress")
         val text = input.firstOrNull { it.type == "text" }?.text.orEmpty()
+        turnThreads[turn.id] = threadId
         turnJobs[turn.id] = scope.launch { runScript(threadId, turn.id, text) }
         return turn
     }
 
     override suspend fun interruptTurn(threadId: String, turnId: String) {
         turnJobs[turnId]?.cancel()
+    }
+
+    override suspend fun archiveThread(threadId: String) {
+        delay(150)
+        threads.removeAll { it.id == threadId }
+    }
+
+    override suspend fun deleteThread(threadId: String) {
+        delay(150)
+        turnJobs.entries
+            .filter { turnThreads[it.key] == threadId }
+            .forEach { it.value.cancel() }
+        threads.removeAll { it.id == threadId }
     }
 
     override suspend fun respondApproval(requestId: Int, decision: ApprovalDecision) {
@@ -145,6 +160,7 @@ class FakeCodexRepository : CodexRepository {
             _events.emit(CodexEvent.TurnCompleted(threadId, turnId, status = "interrupted"))
             throw e
         } finally {
+            turnThreads.remove(turnId)
             turnJobs.remove(turnId)
             touchThread(threadId, userText)
         }

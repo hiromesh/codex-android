@@ -40,9 +40,36 @@ class ThreadListViewModel(private val repo: CodexRepository) : ViewModel() {
                         updateThreadStatus(event.threadId, "idle")
                     }
                     is CodexEvent.ThreadReconciled -> replaceThread(event.thread)
+                    // 多端同步：web/其他手机删除或归档后，本机列表即时移除
+                    is CodexEvent.ThreadDeleted -> removeLocally(event.threadId)
+                    is CodexEvent.ThreadArchived -> removeLocally(event.threadId)
                     else -> Unit
                 }
             }
+        }
+    }
+
+    /** 归档（软删除，可恢复）：先本地移除，失败则刷新列表恢复 */
+    fun archiveThread(threadId: String) {
+        removeLocally(threadId)
+        viewModelScope.launch {
+            runCatching { repo.archiveThread(threadId) }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "归档失败：${e.message}") }
+                    refresh()
+                }
+        }
+    }
+
+    /** 彻底删除（不可恢复）：先本地移除，失败则刷新列表恢复 */
+    fun deleteThread(threadId: String) {
+        removeLocally(threadId)
+        viewModelScope.launch {
+            runCatching { repo.deleteThread(threadId) }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "删除失败：${e.message}") }
+                    refresh()
+                }
         }
     }
 
@@ -77,6 +104,11 @@ class ThreadListViewModel(private val repo: CodexRepository) : ViewModel() {
         _uiState.update { state ->
             state.copy(threads = state.threads.map { thread -> if (thread.id == updated.id) updated else thread })
         }
+    }
+
+    private fun removeLocally(threadId: String) {
+        locallyWorkingThreadIds -= threadId
+        _uiState.update { state -> state.copy(threads = state.threads.filterNot { it.id == threadId }) }
     }
 
     companion object {

@@ -12,7 +12,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,8 +34,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -44,10 +49,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -56,6 +65,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hiro.codex_android.data.ServiceLocator
 import com.hiro.codex_android.data.model.Thread
@@ -76,6 +86,8 @@ fun ThreadListScreen(
 ) {
     val vm: ThreadListViewModel = viewModel(factory = ThreadListViewModel.factory(ServiceLocator.repository))
     val state by vm.uiState.collectAsState()
+    // 长按卡片弹出的删除目标；null 表示无弹窗
+    var actionTarget by remember { mutableStateOf<Thread?>(null) }
 
     // 首页可见时保持轻量轮询，让其他正在工作的任务也能及时显示状态。
     LaunchedEffect(Unit) {
@@ -103,6 +115,7 @@ fun ThreadListScreen(
                         sharedTransitionScope = sharedTransitionScope,
                         animatedVisibilityScope = animatedVisibilityScope,
                         onClick = { onOpenThread(thread.id) },
+                        onLongClick = { actionTarget = thread },
                     )
                 }
             }
@@ -124,6 +137,52 @@ fun ThreadListScreen(
                         "还没有会话，点右下角 + 开始",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+
+            // 长按卡片：确认后彻底删除，风格与审批弹窗一致
+            actionTarget?.let { target ->
+                Dialog(onDismissRequest = { actionTarget = null }) {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = CardDefaults.outlinedCardBorder(enabled = true),
+                    ) {
+                        Column(Modifier.padding(20.dp)) {
+                            Text("删除会话？", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(12.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(
+                                    text = target.name ?: target.preview.ifBlank { "Untitled task" },
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    vm.deleteThread(target.id)
+                                    actionTarget = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                            ) { Text("删除") }
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = { actionTarget = null },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("取消") }
+                        }
+                    }
                 }
             }
 
@@ -170,13 +229,14 @@ fun ThreadListScreen(
     }
 }
 
-@OptIn(ExperimentalSharedTransitionApi::class)
+@OptIn(ExperimentalSharedTransitionApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ThreadCard(
     thread: Thread,
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val working = thread.isWorking()
     val pulseTransition = rememberInfiniteTransition(label = "task-pulse")
@@ -200,11 +260,11 @@ private fun ThreadCard(
         )
     }
     Card(
-        onClick = onClick,
-        // 过渡层轻微模糊，形成玻璃缓冲，静止后立即恢复清晰。
+        // combinedClickable 支持长按；Card 的 onClick 重载只支持单击。
         modifier = sharedModifier
             .blur(if (sharedTransitionScope.isTransitionActive) 14.dp else 0.dp)
-            .fillMaxWidth(),
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = if (working) GlassFillStrong else GlassFill,

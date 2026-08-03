@@ -152,6 +152,14 @@ class WebSocketCodexRepository(
         request("turn/interrupt", JSONObject().put("threadId", threadId).put("turnId", turnId))
     }
 
+    override suspend fun archiveThread(threadId: String) {
+        request("thread/archive", JSONObject().put("threadId", threadId))
+    }
+
+    override suspend fun deleteThread(threadId: String) {
+        request("thread/delete", JSONObject().put("threadId", threadId))
+    }
+
     override suspend fun respondApproval(requestId: Int, decision: ApprovalDecision) {
         // 应答前先确保连接已恢复；否则 socket 断开时直接抛错，审批在服务端永远挂起。
         ensureInitialized()
@@ -407,6 +415,14 @@ class WebSocketCodexRepository(
                         CodexEvent.TokenUsageUpdated(it, TokenUsage(used, effectiveWindow))
                     }
                 }
+            }
+            "thread/deleted" -> {
+                val threadId = params.optString("threadId")
+                emitWhenThreadKnown(threadId) { CodexEvent.ThreadDeleted(it) }
+            }
+            "thread/archived" -> {
+                val threadId = params.optString("threadId")
+                emitWhenThreadKnown(threadId) { CodexEvent.ThreadArchived(it) }
             }
         }
     }

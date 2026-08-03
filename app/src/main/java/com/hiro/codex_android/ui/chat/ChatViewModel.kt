@@ -133,6 +133,27 @@ class ChatViewModel(
 
             is CodexEvent.ThreadReconciled -> applyServerThread(event.thread)
 
+            // 多端同步：当前会话被 web/其他设备删除或归档
+            is CodexEvent.ThreadDeleted ->
+                _uiState.update {
+                    it.copy(
+                        generating = false,
+                        currentTurnId = null,
+                        pendingApproval = null,
+                        error = "会话已被其他设备删除",
+                    )
+                }
+
+            is CodexEvent.ThreadArchived ->
+                _uiState.update {
+                    it.copy(
+                        generating = false,
+                        currentTurnId = null,
+                        pendingApproval = null,
+                        error = "会话已被其他设备归档",
+                    )
+                }
+
             is CodexEvent.ApprovalRequest ->
                 _uiState.update { it.copy(pendingApproval = event) }
         }
