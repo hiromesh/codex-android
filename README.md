@@ -21,14 +21,16 @@ An Android client for remotely connecting to `codex app-server`. It uses WebSock
 
 ## Server configuration
 
-Open **Settings** in the app and provide:
+Open **Settings** in the app and manage one or more **Agent 服务器** profiles. Each profile has:
 
 | Field | Description |
 | --- | --- |
+| Type | Agent kind. Currently only **Codex** (`codex app-server`) is supported; Kimi Code / Claude Code / OpenCode are listed as upcoming |
+| Name | Optional display name; defaults to the type name |
 | Server URL | WebSocket endpoint, for example `wss://example.com:8443` |
 | Token | Server WebSocket Bearer token |
 
-Saving returns to the session list. The token is stored locally on the device and must never be committed to the repository.
+Profiles can be individually enabled/disabled. The session list aggregates threads from all enabled profiles, with a badge showing which agent each session belongs to. Tokens are stored locally on the device and must never be committed to the repository.
 
 See [docs/MOBILE_APP_API.md](docs/MOBILE_APP_API.md) for the protocol reference and [docs/mock.py](docs/mock.py) for a minimal connectivity example.
 

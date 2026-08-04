@@ -12,20 +12,31 @@ import com.hiro.codex_android.data.StreamingAsrClient
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.Content
 import com.hiro.codex_android.data.model.ModelInfo
+import com.hiro.codex_android.data.model.ReviewTarget
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
 import com.hiro.codex_android.data.model.Thread
 import com.hiro.codex_android.data.model.Turn
 import com.hiro.codex_android.data.tts.VolcengineTtsManager
 import java.util.UUID
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** 需要用户二次确认/选择的动作弹窗。 */
+sealed interface PendingActionPrompt {
+    data object ReviewTarget : PendingActionPrompt
+    data class ConfirmUndo(val numTurns: Int) : PendingActionPrompt
+    data class ConfirmShell(val command: String) : PendingActionPrompt
+}
 
 data class ChatUiState(
     /** null 表示新会话，发第一条消息时才真正 thread/start */
@@ -36,8 +47,11 @@ data class ChatUiState(
     val items: List<ThreadItem> = emptyList(),
     val loading: Boolean = false,
     val generating: Boolean = false,
+    /** 斜杠动作进行中（compact/fork 等），禁用连点与发消息。 */
+    val actionBusy: Boolean = false,
     val currentTurnId: String? = null,
     val pendingApproval: CodexEvent.ApprovalRequest? = null,
+    val pendingActionPrompt: PendingActionPrompt? = null,
     val availableModels: List<ModelInfo> = emptyList(),
     /** 上下文占用，来自 thread/tokenUsage/updated */
     val tokenUsage: TokenUsage? = null,
@@ -57,6 +71,9 @@ class ChatViewModel(
 
     private val _uiState = MutableStateFlow(ChatUiState(threadId = initialThreadId))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+    /** /fork 成功后通知 UI 跳到新会话（一次性）。 */
+    private val _openThread = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val openThread: SharedFlow<String> = _openThread.asSharedFlow()
     private var turnWatchdog: Job? = null
     private var asrSession: StreamingAsrClient.Session? = null
     private var asrSessionId: String? = null
@@ -110,7 +127,14 @@ class ChatViewModel(
             is CodexEvent.TurnStarted ->
                 _uiState.update { it.copy(generating = true, currentTurnId = event.turnId) }
 
-            is CodexEvent.ItemStarted -> appendItem(event.item)
+            is CodexEvent.ItemStarted -> {
+                val item = when (val started = event.item) {
+                    // 以事件为准：started = 压缩进行中，避免服务端缺 status 时误显示「已压缩」。
+                    is ThreadItem.ContextCompaction -> started.copy(status = "inProgress")
+                    else -> started
+                }
+                appendItem(item)
+            }
 
             // TTS 只朗读回答正文：正文 delta 边到边合成，工具/思考等其他事件不喂。
             is CodexEvent.AgentMessageDelta -> {
@@ -123,8 +147,12 @@ class ChatViewModel(
 
             // item/completed 里是完整 item，直接替换以校对（§4 处理要点）
             is CodexEvent.ItemCompleted -> {
-                replaceItem(event.item)
-                if (event.item is ThreadItem.AgentMessage) ttsManager.onAgentMessageFinished()
+                val item = when (val completed = event.item) {
+                    is ThreadItem.ContextCompaction -> completed.copy(status = "completed")
+                    else -> completed
+                }
+                replaceItem(item)
+                if (item is ThreadItem.AgentMessage) ttsManager.onAgentMessageFinished()
             }
 
             is CodexEvent.TurnCompleted -> {
@@ -179,10 +207,94 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 输入框发送入口：命中 `/compact` `/review` `/fork` `/undo` 或 `!cmd` 时走动作接口，
+     * 不插入用户气泡、不触发 turn/start；其余仍按普通对话发送。
+     */
+    fun submit(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        when (val action = parseChatAction(trimmed)) {
+            null -> send(trimmed)
+            else -> dispatchAction(action)
+        }
+    }
+
+    fun dismissActionPrompt() {
+        _uiState.update { it.copy(pendingActionPrompt = null) }
+    }
+
+    fun confirmReview(target: ReviewTarget) {
+        _uiState.update { it.copy(pendingActionPrompt = null) }
+        runAction("审查") { threadId ->
+            val result = repo.startReview(threadId, target)
+            _uiState.update {
+                it.copy(generating = true, currentTurnId = result.turn.id, error = null)
+            }
+            startTurnWatchdog(result.reviewThreadId)
+        }
+    }
+
+    fun confirmUndo(numTurns: Int) {
+        _uiState.update { it.copy(pendingActionPrompt = null) }
+        runAction("撤销") { threadId ->
+            val thread = repo.rollbackThread(threadId, numTurns)
+            applyServerThread(thread)
+        }
+    }
+
+    fun confirmShell(command: String) {
+        _uiState.update { it.copy(pendingActionPrompt = null) }
+        runAction("Shell") { threadId ->
+            repo.shellCommand(threadId, command)
+        }
+    }
+
+    private fun dispatchAction(action: ParsedChatAction) {
+        val state = _uiState.value
+        if (state.generating || state.actionBusy) return
+        when (action) {
+            ParsedChatAction.Compact -> runAction("压缩") { threadId ->
+                repo.startCompact(threadId)
+            }
+            ParsedChatAction.ReviewNeedTarget ->
+                _uiState.update { it.copy(pendingActionPrompt = PendingActionPrompt.ReviewTarget) }
+            is ParsedChatAction.Review -> confirmReview(action.target)
+            ParsedChatAction.Fork -> runAction("分叉") { threadId ->
+                val forked = repo.forkThread(threadId)
+                _openThread.emit(forked.id)
+            }
+            is ParsedChatAction.Undo ->
+                _uiState.update {
+                    it.copy(pendingActionPrompt = PendingActionPrompt.ConfirmUndo(action.numTurns))
+                }
+            is ParsedChatAction.Shell ->
+                _uiState.update {
+                    it.copy(pendingActionPrompt = PendingActionPrompt.ConfirmShell(action.command))
+                }
+        }
+    }
+
+    private fun runAction(label: String, block: suspend (threadId: String) -> Unit) {
+        val threadId = _uiState.value.threadId
+        if (threadId == null) {
+            _uiState.update { it.copy(error = "请先发送一条消息创建会话，再使用 $label") }
+            return
+        }
+        if (_uiState.value.actionBusy || _uiState.value.generating) return
+        ttsManager.stop()
+        viewModelScope.launch {
+            _uiState.update { it.copy(actionBusy = true, error = null) }
+            runCatching { block(threadId) }
+                .onFailure { e -> _uiState.update { it.copy(error = "$label 失败：${e.message}") } }
+            _uiState.update { it.copy(actionBusy = false) }
+        }
+    }
+
     /** §3.6 turn/start */
     fun send(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty() || _uiState.value.generating) return
+        if (trimmed.isEmpty() || _uiState.value.generating || _uiState.value.actionBusy) return
         ttsManager.stop()
         viewModelScope.launch {
             var submittedThreadId: String? = null

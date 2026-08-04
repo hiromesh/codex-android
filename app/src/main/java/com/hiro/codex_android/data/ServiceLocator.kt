@@ -4,12 +4,12 @@ import android.content.Context
 import com.hiro.codex_android.data.tts.VolcengineTtsManager
 
 /**
- * 极简服务定位。Repository 通过 SettingsStore 读取服务器地址和 token，
- * 因而设置保存后下一次 RPC 会自动使用新连接配置。
+ * 极简服务定位。Repository 由 RepositoryRegistry 按 AgentProfile 动态创建，
+ * 配置的增删改会自动释放/重建对应连接。
  */
 object ServiceLocator {
 
-    val repository: CodexRepository by lazy { WebSocketCodexRepository(settingsStore) }
+    val registry: RepositoryRegistry by lazy { RepositoryRegistry(settingsStore) }
     val streamingAsrClient: StreamingAsrClient by lazy { StreamingAsrClient() }
     val ttsManager: VolcengineTtsManager by lazy { VolcengineTtsManager(settingsStore) }
 

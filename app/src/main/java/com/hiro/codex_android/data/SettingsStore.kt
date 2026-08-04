@@ -4,11 +4,11 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
 
-/** App 级配置，对应文档 §0 的连接信息。模型是会话级设置（§3.9），不放这里 */
+/** App 级全局配置（语音识别/合成）。Agent 服务器配置见 [AgentProfile]，可有多个。 */
 data class AppSettings(
-    val serverUrl: String = DEFAULT_SERVER_URL,
-    val token: String = "",
     /** 火山引擎流式 ASR（旧版控制台）的连接配置。 */
     val asrUrl: String = DEFAULT_ASR_URL,
     val asrAppKey: String = "",
@@ -25,8 +25,6 @@ data class AppSettings(
     val ttsSpeechRate: Int = 0,
 ) {
     companion object {
-        /** §0 生产地址（8443 规避未备案域名 80/443 拦截） */
-        const val DEFAULT_SERVER_URL = "wss://codex.waibozishu.com:8443"
         /** 文档推荐的双向流式优化接口，实时返回识别结果。 */
         const val DEFAULT_ASR_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
         /** 豆包流式语音识别模型 2.0 小时版；并发版可在设置中替换。 */
@@ -40,7 +38,10 @@ data class AppSettings(
     }
 }
 
-/** SharedPreferences 持久化，接入后端时 Repository 从这里读地址和 token */
+/**
+ * SharedPreferences 持久化。Agent 服务器配置以 JSON 数组存为多个 profile；
+ * 全局 ASR/TTS 仍是平铺 key。Repository 由 RepositoryRegistry 按 profile 创建。
+ */
 class SettingsStore(context: Context) {
 
     private val prefs = context.getSharedPreferences("codex_settings", Context.MODE_PRIVATE)
@@ -48,9 +49,10 @@ class SettingsStore(context: Context) {
     private val _settings = MutableStateFlow(load())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
+    private val _profiles = MutableStateFlow(loadProfiles())
+    val profiles: StateFlow<List<AgentProfile>> = _profiles.asStateFlow()
+
     private fun load(): AppSettings = AppSettings(
-        serverUrl = prefs.getString(KEY_URL, AppSettings.DEFAULT_SERVER_URL) ?: AppSettings.DEFAULT_SERVER_URL,
-        token = prefs.getString(KEY_TOKEN, "").orEmpty(),
         asrUrl = prefs.getString(KEY_ASR_URL, AppSettings.DEFAULT_ASR_URL) ?: AppSettings.DEFAULT_ASR_URL,
         asrAppKey = prefs.getString(KEY_ASR_APP_KEY, "").orEmpty(),
         asrAccessKey = prefs.getString(KEY_ASR_ACCESS_KEY, "").orEmpty(),
@@ -66,10 +68,28 @@ class SettingsStore(context: Context) {
         ttsSpeechRate = prefs.getInt(KEY_TTS_SPEECH_RATE, 0),
     )
 
+    /** 首次升级时把旧的单一 serverUrl/token 迁移为一个 codex profile。 */
+    private fun loadProfiles(): List<AgentProfile> {
+        val json = prefs.getString(KEY_PROFILES, null)
+        if (json != null) return parseProfiles(json)
+        if (!prefs.contains(KEY_LEGACY_URL) && !prefs.contains(KEY_LEGACY_TOKEN)) return emptyList()
+        val migrated = AgentProfile(
+            name = "",
+            type = AgentType.CODEX,
+            serverUrl = prefs.getString(KEY_LEGACY_URL, AgentType.defaultUrl(AgentType.CODEX))
+                ?: AgentType.defaultUrl(AgentType.CODEX),
+            token = prefs.getString(KEY_LEGACY_TOKEN, "").orEmpty(),
+        )
+        prefs.edit()
+            .remove(KEY_LEGACY_URL)
+            .remove(KEY_LEGACY_TOKEN)
+            .putString(KEY_PROFILES, profilesToJson(listOf(migrated)))
+            .apply()
+        return listOf(migrated)
+    }
+
     fun save(settings: AppSettings) {
         prefs.edit()
-            .putString(KEY_URL, settings.serverUrl)
-            .putString(KEY_TOKEN, settings.token)
             .putString(KEY_ASR_URL, settings.asrUrl)
             .putString(KEY_ASR_APP_KEY, settings.asrAppKey)
             .putString(KEY_ASR_ACCESS_KEY, settings.asrAccessKey)
@@ -84,9 +104,64 @@ class SettingsStore(context: Context) {
         _settings.value = settings
     }
 
+    /** 按 id upsert。 */
+    fun saveProfile(profile: AgentProfile) {
+        val updated = _profiles.value.filterNot { it.id == profile.id } + profile
+        persistProfiles(updated)
+    }
+
+    fun deleteProfile(profileId: String) {
+        persistProfiles(_profiles.value.filterNot { it.id == profileId })
+    }
+
+    private fun persistProfiles(profiles: List<AgentProfile>) {
+        prefs.edit().putString(KEY_PROFILES, profilesToJson(profiles)).apply()
+        _profiles.value = profiles
+    }
+
+    private fun parseProfiles(json: String): List<AgentProfile> = try {
+        val array = JSONArray(json)
+        buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                if (id.isBlank()) continue
+                add(
+                    AgentProfile(
+                        id = id,
+                        name = obj.optString("name"),
+                        type = AgentType.fromWireValue(obj.optString("type")),
+                        serverUrl = obj.optString("serverUrl"),
+                        token = obj.optString("token"),
+                        enabled = obj.optBoolean("enabled", true),
+                    ),
+                )
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun profilesToJson(profiles: List<AgentProfile>): String {
+        val array = JSONArray()
+        profiles.forEach { profile ->
+            array.put(
+                JSONObject()
+                    .put("id", profile.id)
+                    .put("name", profile.name)
+                    .put("type", profile.type.wireValue)
+                    .put("serverUrl", profile.serverUrl)
+                    .put("token", profile.token)
+                    .put("enabled", profile.enabled),
+            )
+        }
+        return array.toString()
+    }
+
     private companion object {
-        const val KEY_URL = "serverUrl"
-        const val KEY_TOKEN = "token"
+        const val KEY_PROFILES = "agentProfiles"
+        const val KEY_LEGACY_URL = "serverUrl"
+        const val KEY_LEGACY_TOKEN = "token"
         const val KEY_ASR_URL = "asrUrl"
         const val KEY_ASR_APP_KEY = "asrAppKey"
         const val KEY_ASR_ACCESS_KEY = "asrAccessKey"

@@ -3,6 +3,8 @@ package com.hiro.codex_android.data
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.Content
 import com.hiro.codex_android.data.model.ModelInfo
+import com.hiro.codex_android.data.model.ReviewStartResult
+import com.hiro.codex_android.data.model.ReviewTarget
 import com.hiro.codex_android.data.model.Thread
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
@@ -82,14 +84,18 @@ sealed interface CodexEvent {
 data class ThreadPage(val data: List<Thread>, val nextCursor: String?)
 
 /**
- * Codex 后端仓库接口。方法名刻意对应 WebSocket 协议的 RPC method（§3），
- * UI / ViewModel 层只依赖此接口；生产实现使用 OkHttp WebSocket，
- * 测试或预览时仍可注入 FakeCodexRepository。
+ * Agent 后端仓库接口。方法名刻意对应 WebSocket 协议的 RPC method（§3），
+ * UI / ViewModel 层只依赖此接口。这是 per-agent 连接抽象：每个 AgentProfile
+ * 由 RepositoryRegistry 创建一个实例；codex 的生产实现是 WebSocketCodexRepository，
+ * 后续 kimi 等（REST+WS 协议）也实现同一接口。测试或预览时仍可注入 FakeCodexRepository。
  */
 interface CodexRepository {
 
     /** 全局事件流：单连接 + reader 协程分发（§8.2），所有事件都从这里出来 */
     val events: SharedFlow<CodexEvent>
+
+    /** 释放连接与协程；profile 被删除/修改后由 RepositoryRegistry 调用，实例此后不可再用。 */
+    fun close() {}
 
     /** §3.1 initialize + initialized */
     suspend fun initialize(clientName: String = "codex-android", version: String = "0.1.0")
@@ -126,4 +132,25 @@ interface CodexRepository {
 
     /** §3.9② thread/settings/update：会话中途切换模型/推理档位 */
     suspend fun updateThreadSettings(threadId: String, model: String? = null, effort: String? = null)
+
+    // ── 动作类接口（docs/CODEX_ACTIONS_API.md）：斜杠命令对应物，不走 turn/start 发消息 ──
+
+    /** thread/compact/start：压缩上下文（/compact）；立即返回，压缩在后台进行 */
+    suspend fun startCompact(threadId: String)
+
+    /** review/start：发起代码审查（/review） */
+    suspend fun startReview(
+        threadId: String,
+        target: ReviewTarget,
+        delivery: String = "inline",
+    ): ReviewStartResult
+
+    /** thread/fork：分叉会话（/fork）；可选 lastTurnId 截断到某一轮（含） */
+    suspend fun forkThread(threadId: String, lastTurnId: String? = null): Thread
+
+    /** thread/rollback：砍掉末尾 N 轮（/undo）；只删对话历史，不回滚文件改动 */
+    suspend fun rollbackThread(threadId: String, numTurns: Int = 1): Thread
+
+    /** thread/shellCommand：在会话上下文跑 shell（!cmd）；不受沙箱限制 */
+    suspend fun shellCommand(threadId: String, command: String)
 }

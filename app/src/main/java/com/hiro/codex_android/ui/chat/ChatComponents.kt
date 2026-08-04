@@ -235,6 +235,36 @@ fun FileChangeCard(item: ThreadItem.FileChange) {
     }
 }
 
+/** 上下文压缩卡片（/compact → contextCompaction item） */
+@Composable
+fun ContextCompactionCard(item: ThreadItem.ContextCompaction) {
+    // 只有明确 completed 才显示「已压缩」；其余一律按进行中处理。
+    val done = item.status == "completed"
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.widthIn(max = 340.dp),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = CardDefaults.outlinedCardBorder(enabled = true),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            if (!done) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Text("◎", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (done) "上下文已压缩" else "正在压缩上下文…",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
 /** 计划卡片 */
 @Composable
 fun PlanCard(item: ThreadItem.Plan) {
@@ -396,12 +426,13 @@ fun ApprovalDialog(
 }
 
 /**
- * 底部输入区：一个圆角容器，上行文本框，
+ * 底部输入区：一个圆角容器，上行文本框；输入 `/` 时上方弹出斜杠命令菜单。
  * 下行左为模型选择（§3.8/§3.9），中间是语音识别，右侧为上下文占用环（tokenUsage/updated）+ 发送/停止。
  */
 @Composable
 fun ChatInputBar(
     generating: Boolean,
+    actionBusy: Boolean = false,
     model: String,
     effort: String,
     models: List<ModelInfo>,
@@ -417,6 +448,8 @@ fun ChatInputBar(
     val inputState = rememberTextFieldState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val inputText = inputState.text.toString()
+    val slashSuggestions = remember(inputText) { filterSlashCommands(inputText) }
     // ASR 的 result.text 是“本次完整识别结果”而不是 delta。记录启动前文本后每次替换尾部，
     // 既能实时上屏，也不会因服务端重复返回全文而重复追加。
     var voicePrefix by remember { mutableStateOf<String?>(null) }
@@ -441,6 +474,17 @@ fun ChatInputBar(
             voicePrefix = null
         }
     }
+    fun submitCurrent() {
+        onStopAsr()
+        voicePrefix = null
+        val message = inputState.text.toString().trim()
+        if (message.isNotEmpty()) {
+            onSend(message)
+            inputState.edit { replace(0, length, "") }
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
+    }
     // 输入区域与控制栏必须使用同一张底，避免 Material TextField 自己的 container 色形成色块。
     val inputBackground = Color(0xFF1B2939)
     Column(
@@ -450,6 +494,20 @@ fun ChatInputBar(
             .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        if (slashSuggestions.isNotEmpty()) {
+            SlashCommandMenu(
+                commands = slashSuggestions,
+                onSelect = { command ->
+                    onStopAsr()
+                    voicePrefix = null
+                    onSend(command.trigger)
+                    inputState.edit { replace(0, length, "") }
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                },
+            )
+            Spacer(Modifier.height(6.dp))
+        }
         Surface(
             color = inputBackground,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -489,7 +547,6 @@ fun ChatInputBar(
                         modifier = Modifier.padding(start = 8.dp),
                     )
                     Spacer(Modifier.weight(1f))
-                    // 与 Token 用量环并排，同为 30dp 圆形，作为一组紧凑的状态/输入控制。
                     Surface(
                         color = if (asrRecording) MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
                         else Color.Transparent,
@@ -516,11 +573,9 @@ fun ChatInputBar(
                     ContextUsageRing(tokenUsage)
                     Spacer(Modifier.width(10.dp))
                     if (generating) {
-                        // 不确定进度环持续旋转，明确告诉用户服务端仍在生成；中心仍可点击停止。
                         FilledIconButton(onClick = onInterrupt, modifier = Modifier.size(36.dp)) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(30.dp)) {
                                 CircularProgressIndicator(
-                                    // 环贴近按钮内沿旋转，中心只保留停止方块。
                                     modifier = Modifier.size(30.dp),
                                     color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.65f),
                                     strokeWidth = 2.dp,
@@ -534,19 +589,8 @@ fun ChatInputBar(
                         }
                     } else {
                         FilledIconButton(
-                            onClick = {
-                                // 发送时不接收停麦克风后的最终回包，确保当前输入就是被发出的内容。
-                                onStopAsr()
-                                voicePrefix = null
-                                val message = inputState.text.toString().trim()
-                                if (message.isNotEmpty()) {
-                                    onSend(message)
-                                    inputState.edit { replace(0, length, "") }
-                                    focusManager.clearFocus(force = true)
-                                    keyboardController?.hide()
-                                }
-                            },
-                            enabled = inputState.text.isNotBlank(),
+                            onClick = ::submitCurrent,
+                            enabled = inputState.text.isNotBlank() && !actionBusy,
                             modifier = Modifier.size(36.dp),
                         ) {
                             Icon(
@@ -555,6 +599,44 @@ fun ChatInputBar(
                                 modifier = Modifier.size(18.dp),
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlashCommandMenu(
+    commands: List<SlashCommandSpec>,
+    onSelect: (SlashCommandSpec) -> Unit,
+) {
+    Surface(
+        color = Color(0xFF1B2939),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(14.dp),
+        shadowElevation = 10.dp,
+        border = BorderStroke(1.dp, GlassBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            commands.forEach { command ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(command) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = command.trigger,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.widthIn(min = 88.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(command.title, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }

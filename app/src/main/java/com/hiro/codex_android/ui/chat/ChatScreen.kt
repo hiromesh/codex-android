@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -52,26 +53,31 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hiro.codex_android.data.ServiceLocator
 import com.hiro.codex_android.data.model.ThreadItem
+import com.hiro.codex_android.ui.components.AgentBadge
 import com.hiro.codex_android.ui.theme.GlassFill
 
 /** @param threadIdArg "new" 表示新会话（发第一条消息时才真正 thread/start） */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun ChatScreen(
+    profileIdArg: String,
     threadIdArg: String,
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onBack: () -> Unit,
+    onOpenThread: (threadId: String) -> Unit = {},
 ) {
     val vm: ChatViewModel = viewModel(
         factory = ChatViewModel.factory(
             threadId = threadIdArg.takeIf { it != "new" },
-            repo = ServiceLocator.repository,
+            repo = ServiceLocator.registry.repositoryFor(profileIdArg),
             settingsStore = ServiceLocator.settingsStore,
             streamingAsrClient = ServiceLocator.streamingAsrClient,
             ttsManager = ServiceLocator.ttsManager,
         ),
     )
+    val profiles by ServiceLocator.settingsStore.profiles.collectAsState()
+    val agentType = profiles.firstOrNull { it.id == profileIdArg }?.type
     val state by vm.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -109,7 +115,7 @@ fun ChatScreen(
     } else {
         with(sharedTransitionScope) {
             Modifier.sharedBounds(
-                sharedContentState = rememberSharedContentState(key = "thread-card-$threadIdArg"),
+                sharedContentState = rememberSharedContentState(key = "thread-card-$profileIdArg:$threadIdArg"),
                 animatedVisibilityScope = animatedVisibilityScope,
                 enter = androidx.compose.animation.fadeIn(tween(durationMillis = 160, delayMillis = 400)),
                 exit = androidx.compose.animation.fadeOut(tween(durationMillis = 150)),
@@ -128,6 +134,7 @@ fun ChatScreen(
         bottomBar = {
             ChatInputBar(
                 generating = state.generating,
+                actionBusy = state.actionBusy,
                 model = state.model,
                 effort = state.effort,
                 models = state.availableModels,
@@ -148,7 +155,7 @@ fun ChatScreen(
                     }
                 },
                 onStopAsr = vm::stopAsr,
-                onSend = vm::send,
+                onSend = vm::submit,
                 onInterrupt = vm::interrupt,
             )
         },
@@ -215,18 +222,22 @@ fun ChatScreen(
                         is ThreadItem.Plan -> PlanCard(item)
                         is ThreadItem.WebSearch -> WebSearchCard(item)
                         is ThreadItem.Reasoning -> ReasoningItem(item)
+                        is ThreadItem.ContextCompaction -> ContextCompactionCard(item)
                     }
                 }
             }
-            IconButton(
-                onClick = onBack,
+            Row(
                 modifier = Modifier.statusBarsPadding().padding(start = 4.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "返回",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                IconButton(onClick = onBack) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "返回",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                agentType?.let { AgentBadge(it, size = 22.dp) }
             }
         }
     }
@@ -234,5 +245,17 @@ fun ChatScreen(
     // §6 审批：必须应答
     state.pendingApproval?.let { request ->
         ApprovalDialog(request = request, onDecision = vm::respondApproval)
+    }
+
+    ActionPromptDialogs(
+        prompt = state.pendingActionPrompt,
+        onDismiss = vm::dismissActionPrompt,
+        onConfirmReview = vm::confirmReview,
+        onConfirmUndo = vm::confirmUndo,
+        onConfirmShell = vm::confirmShell,
+    )
+
+    LaunchedEffect(vm) {
+        vm.openThread.collect(onOpenThread)
     }
 }

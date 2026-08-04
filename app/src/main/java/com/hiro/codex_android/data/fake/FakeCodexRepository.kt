@@ -6,6 +6,8 @@ import com.hiro.codex_android.data.ThreadPage
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.Content
 import com.hiro.codex_android.data.model.ModelInfo
+import com.hiro.codex_android.data.model.ReviewStartResult
+import com.hiro.codex_android.data.model.ReviewTarget
 import com.hiro.codex_android.data.model.Thread
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.TokenUsage
@@ -139,6 +141,68 @@ class FakeCodexRepository : CodexRepository {
                 thread
             }
         }
+    }
+
+    override suspend fun startCompact(threadId: String) {
+        delay(100)
+        val itemId = uuid()
+        _events.emit(CodexEvent.ItemStarted(threadId, ThreadItem.ContextCompaction(itemId, "inProgress")))
+        scope.launch {
+            delay(800)
+            _events.emit(CodexEvent.ItemCompleted(threadId, ThreadItem.ContextCompaction(itemId, "completed")))
+            emitTokenUsage(threadId, turnCost = -40_000)
+        }
+    }
+
+    override suspend fun startReview(
+        threadId: String,
+        target: ReviewTarget,
+        delivery: String,
+    ): ReviewStartResult {
+        delay(150)
+        val turn = Turn(id = uuid(), status = "inProgress")
+        turnThreads[turn.id] = threadId
+        turnJobs[turn.id] = scope.launch {
+            runScript(threadId, turn.id, "代码审查：${target}")
+        }
+        return ReviewStartResult(turn = turn, reviewThreadId = threadId)
+    }
+
+    override suspend fun forkThread(threadId: String, lastTurnId: String?): Thread {
+        delay(200)
+        val source = readThread(threadId, includeTurns = true)
+        val now = epochSeconds()
+        val forked = source.copy(
+            id = uuid(),
+            name = (source.name ?: source.preview).ifBlank { "会话" } + "（分叉）",
+            preview = source.preview,
+            createdAt = now,
+            updatedAt = now,
+            turns = source.turns,
+        )
+        threads += forked
+        return forked
+    }
+
+    override suspend fun rollbackThread(threadId: String, numTurns: Int): Thread {
+        delay(200)
+        threads.replaceAll { thread ->
+            if (thread.id != threadId) thread
+            else thread.copy(turns = thread.turns.dropLast(numTurns.coerceAtLeast(1)))
+        }
+        return readThread(threadId, includeTurns = true)
+    }
+
+    override suspend fun shellCommand(threadId: String, command: String) {
+        delay(100)
+        commandItem(
+            threadId,
+            command = command,
+            cwd = "/home/hiro/proj",
+            output = "(fake) $command\nok",
+            exitCode = 0,
+            durationMs = 120,
+        )
     }
 
     // ── 脚本 ─────────────────────────────────────────────────────────────

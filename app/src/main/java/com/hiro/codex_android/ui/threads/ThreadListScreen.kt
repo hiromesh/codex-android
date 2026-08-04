@@ -39,6 +39,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -69,6 +71,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hiro.codex_android.data.ServiceLocator
 import com.hiro.codex_android.data.model.Thread
+import com.hiro.codex_android.ui.components.AgentBadge
 import com.hiro.codex_android.ui.theme.GlassBorder
 import com.hiro.codex_android.ui.theme.GlassFill
 import com.hiro.codex_android.ui.theme.GlassFillStrong
@@ -80,14 +83,19 @@ import kotlinx.coroutines.isActive
 fun ThreadListScreen(
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
-    onOpenThread: (String) -> Unit,
-    onNewThread: () -> Unit,
+    onOpenThread: (profileId: String, threadId: String) -> Unit,
+    onNewThread: (profileId: String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    val vm: ThreadListViewModel = viewModel(factory = ThreadListViewModel.factory(ServiceLocator.repository))
+    val vm: ThreadListViewModel = viewModel(
+        factory = ThreadListViewModel.factory(ServiceLocator.registry, ServiceLocator.settingsStore),
+    )
     val state by vm.uiState.collectAsState()
     // 长按卡片弹出的删除目标；null 表示无弹窗
-    var actionTarget by remember { mutableStateOf<Thread?>(null) }
+    var actionTarget by remember { mutableStateOf<ThreadEntry?>(null) }
+    // 多配置时 + 号先选目标配置
+    var profilePickerOpen by remember { mutableStateOf(false) }
+    var noProfileHint by remember { mutableStateOf(false) }
 
     // 首页可见时保持轻量轮询，让其他正在工作的任务也能及时显示状态。
     LaunchedEffect(Unit) {
@@ -109,13 +117,26 @@ fun ThreadListScreen(
                 contentPadding = PaddingValues(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(state.threads, key = { it.id }) { thread ->
+                // 部分配置连接失败时保留其他配置的卡片，失败项在列表顶部提示。
+                if (state.entries.isNotEmpty()) {
+                    state.profileErrors.forEach { (profileId, message) ->
+                        item(key = "error-$profileId") {
+                            val name = state.profiles.firstOrNull { it.id == profileId }?.displayName ?: profileId
+                            Text(
+                                text = "$name 连接失败：$message",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+                items(state.entries, key = { it.key }) { entry ->
                     ThreadCard(
-                        thread = thread,
+                        entry = entry,
                         sharedTransitionScope = sharedTransitionScope,
                         animatedVisibilityScope = animatedVisibilityScope,
-                        onClick = { onOpenThread(thread.id) },
-                        onLongClick = { actionTarget = thread },
+                        onClick = { onOpenThread(entry.profileId, entry.thread.id) },
+                        onLongClick = { actionTarget = entry },
                     )
                 }
             }
@@ -123,20 +144,23 @@ fun ThreadListScreen(
             if (state.loading) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().statusBarsPadding())
             }
-            if (!state.loading && state.error != null) {
+            if (!state.loading && state.entries.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        "无法连接：${state.error}",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(24.dp),
-                    )
-                }
-            } else if (!state.loading && state.threads.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        "还没有会话，点右下角 + 开始",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (state.profileErrors.isEmpty()) {
+                        Text(
+                            if (state.profiles.isEmpty()) "先在设置里添加一个 Agent 服务器" else "还没有会话，点右下角 + 开始",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            state.profileErrors.entries.joinToString("\n") { (profileId, message) ->
+                                val name = state.profiles.firstOrNull { it.id == profileId }?.displayName ?: profileId
+                                "$name 无法连接：$message"
+                            },
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(24.dp),
+                        )
+                    }
                 }
             }
 
@@ -157,7 +181,8 @@ fun ThreadListScreen(
                                 shape = RoundedCornerShape(10.dp),
                             ) {
                                 Text(
-                                    text = target.name ?: target.preview.ifBlank { "Untitled task" },
+                                    text = target.thread.name
+                                        ?: target.thread.preview.ifBlank { "Untitled task" },
                                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                                     style = MaterialTheme.typography.bodyMedium,
                                     maxLines = 2,
@@ -167,7 +192,7 @@ fun ThreadListScreen(
                             Spacer(Modifier.height(8.dp))
                             Button(
                                 onClick = {
-                                    vm.deleteThread(target.id)
+                                    vm.deleteThread(target.profileId, target.thread.id)
                                     actionTarget = null
                                 },
                                 modifier = Modifier.fillMaxWidth(),
@@ -179,6 +204,41 @@ fun ThreadListScreen(
                             Spacer(Modifier.height(4.dp))
                             TextButton(
                                 onClick = { actionTarget = null },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("取消") }
+                        }
+                    }
+                }
+            }
+
+            // 没有任何可用配置时，+ 号给出指引而不是静默失败。
+            if (noProfileHint) {
+                Dialog(onDismissRequest = { noProfileHint = false }) {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = CardDefaults.outlinedCardBorder(enabled = true),
+                    ) {
+                        Column(Modifier.padding(20.dp)) {
+                            Text("还没有可用的 Agent 服务器", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "先在设置里添加一个服务器配置，再回来新建会话。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    noProfileHint = false
+                                    onOpenSettings()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("去设置") }
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = { noProfileHint = false },
                                 modifier = Modifier.fillMaxWidth(),
                             ) { Text("取消") }
                         }
@@ -211,18 +271,46 @@ fun ThreadListScreen(
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                FloatingActionButton(
-                    onClick = onNewThread,
-                    modifier = Modifier.size(52.dp),
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "新会话",
-                        modifier = Modifier.size(22.dp),
-                    )
+                Box {
+                    FloatingActionButton(
+                        onClick = {
+                            when (state.profiles.size) {
+                                0 -> noProfileHint = true
+                                1 -> onNewThread(state.profiles.first().id)
+                                else -> profilePickerOpen = true
+                            }
+                        },
+                        modifier = Modifier.size(52.dp),
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "新会话",
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = profilePickerOpen,
+                        onDismissRequest = { profilePickerOpen = false },
+                    ) {
+                        state.profiles.forEach { profile ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        AgentBadge(profile.type, size = 22.dp)
+                                        Spacer(Modifier.size(10.dp))
+                                        Text(profile.displayName)
+                                    }
+                                },
+                                onClick = {
+                                    profilePickerOpen = false
+                                    onNewThread(profile.id)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -232,12 +320,13 @@ fun ThreadListScreen(
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ThreadCard(
-    thread: Thread,
+    entry: ThreadEntry,
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
+    val thread = entry.thread
     val working = thread.isWorking()
     val pulseTransition = rememberInfiniteTransition(label = "task-pulse")
     val pulseAlpha by pulseTransition.animateFloat(
@@ -251,7 +340,7 @@ private fun ThreadCard(
     )
     val sharedModifier = with(sharedTransitionScope) {
         Modifier.sharedBounds(
-            sharedContentState = rememberSharedContentState(key = "thread-card-${thread.id}"),
+            sharedContentState = rememberSharedContentState(key = "thread-card-${entry.key}"),
             animatedVisibilityScope = animatedVisibilityScope,
             // 内容分段切换，避免卡片与聊天正文在同一帧重叠。
             enter = androidx.compose.animation.fadeIn(tween(durationMillis = 160, delayMillis = 400)),
@@ -275,6 +364,8 @@ private fun ThreadCard(
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 15.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                AgentBadge(entry.agentType, size = 24.dp)
+                Spacer(Modifier.size(10.dp))
                 Text(
                     text = thread.name ?: thread.preview.ifBlank { "Untitled task" },
                     modifier = Modifier.weight(1f),
@@ -290,7 +381,7 @@ private fun ThreadCard(
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = listOfNotNull("Codex", thread.model, thread.effort?.replaceFirstChar { it.uppercase() })
+                    text = listOfNotNull(entry.profileName, thread.model, thread.effort?.replaceFirstChar { it.uppercase() })
                         .joinToString("  ·  "),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,

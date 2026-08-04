@@ -3,6 +3,8 @@ package com.hiro.codex_android.data
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.Content
 import com.hiro.codex_android.data.model.ModelInfo
+import com.hiro.codex_android.data.model.ReviewStartResult
+import com.hiro.codex_android.data.model.ReviewTarget
 import com.hiro.codex_android.data.model.Thread
 import com.hiro.codex_android.data.model.ThreadItem
 import com.hiro.codex_android.data.model.ThreadStatus
@@ -19,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -36,13 +39,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * `codex app-server` 的单 WebSocket 实现。
+ * `codex app-server` 的单 WebSocket 实现，绑定一个 [AgentProfile]。
  *
- * 每次 RPC 前确保连接已经完成 initialize/initialized 握手；配置页变更地址或
- * token 后会关闭旧连接并重新握手。所有服务端通知和审批请求由同一 reader 分发。
+ * 每次 RPC 前确保连接已经完成 initialize/initialized 握手；profile 的地址或
+ * token 变更后由 RepositoryRegistry 重建本实例，实例自身不感知配置变化。
+ * 所有服务端通知和审批请求由同一 reader 分发。
  */
 class WebSocketCodexRepository(
-    private val settingsStore: SettingsStore,
+    private val profile: AgentProfile,
 ) : CodexRepository {
 
     private data class ConnectionConfig(val url: String, val token: String)
@@ -83,6 +87,16 @@ class WebSocketCodexRepository(
 
     override suspend fun initialize(clientName: String, version: String) {
         ensureInitialized(clientName, version)
+    }
+
+    /** profile 被删除/修改后由 RepositoryRegistry 调用：断连并停掉 reader 协程，实例不可再用。 */
+    override fun close() {
+        socket?.close(1000, "profile changed")
+        socket = null
+        recoveryJob?.cancel()
+        openWaiter?.completeExceptionally(IOException("连接已关闭"))
+        failPending(IOException("连接已关闭"))
+        scope.cancel()
     }
 
     override suspend fun listThreads(cursor: String?, limit: Int): ThreadPage {
@@ -181,9 +195,56 @@ class WebSocketCodexRepository(
         request("thread/settings/update", params)
     }
 
+    override suspend fun startCompact(threadId: String) {
+        ensureThreadAttached(threadId)
+        request("thread/compact/start", JSONObject().put("threadId", threadId))
+    }
+
+    override suspend fun startReview(
+        threadId: String,
+        target: ReviewTarget,
+        delivery: String,
+    ): ReviewStartResult {
+        ensureThreadAttached(threadId)
+        currentThreadId = threadId
+        activeTurnThreadId = threadId
+        val params = JSONObject()
+            .put("threadId", threadId)
+            .put("target", target.toJson())
+            .put("delivery", delivery)
+        val result = requestRaw("review/start", params)
+        val turn = parseTurn(result.optJSONObject("turn") ?: throw protocolError("review/start missing turn"))
+        val reviewThreadId = result.nullableString("reviewThreadId") ?: threadId
+        turnThreads[turn.id] = reviewThreadId
+        currentThreadId = reviewThreadId
+        return ReviewStartResult(turn = turn, reviewThreadId = reviewThreadId)
+    }
+
+    override suspend fun forkThread(threadId: String, lastTurnId: String?): Thread {
+        ensureThreadAttached(threadId)
+        val params = JSONObject().put("threadId", threadId)
+        lastTurnId?.let { params.put("lastTurnId", it) }
+        val result = request("thread/fork", params)
+        return threadFromResult(result, "thread/fork missing thread")
+    }
+
+    override suspend fun rollbackThread(threadId: String, numTurns: Int): Thread {
+        ensureThreadAttached(threadId)
+        val result = request(
+            "thread/rollback",
+            JSONObject().put("threadId", threadId).put("numTurns", numTurns.coerceAtLeast(1)),
+        )
+        return threadFromResult(result, "thread/rollback missing thread")
+    }
+
+    override suspend fun shellCommand(threadId: String, command: String) {
+        ensureThreadAttached(threadId)
+        request("thread/shellCommand", JSONObject().put("threadId", threadId).put("command", command))
+    }
+
     private suspend fun ensureInitialized(clientName: String = "codex-android", version: String = "1.0.0") {
         connectMutex.withLock {
-            val desired = settingsStore.settings.value.toConnectionConfig()
+            val desired = profile.toConnectionConfig()
             if (socket != null && config == desired) return
 
             socket?.close(1000, "connection settings changed")
@@ -362,11 +423,16 @@ class WebSocketCodexRepository(
                 emitWhenThreadKnown(threadId) { CodexEvent.TurnStarted(it, turnId) }
             }
             "item/started", "item/completed" -> {
-                val item = parseItem(params.optJSONObject("item")) ?: return
+                val method = message.optString("method")
+                // contextCompaction 的 item/started 常不带 status；按事件阶段给默认值，避免一调用就显示「已压缩」。
+                val item = parseItem(
+                    params.optJSONObject("item"),
+                    compactionDefaultStatus = if (method == "item/started") "inProgress" else "completed",
+                ) ?: return
                 val threadId = params.optString("threadId", itemThreads[item.id] ?: currentThreadId.orEmpty())
                 if (threadId.isNotBlank()) itemThreads[item.id] = threadId
                 emitWhenThreadKnown(threadId) {
-                    if (message.optString("method") == "item/started") CodexEvent.ItemStarted(it, item)
+                    if (method == "item/started") CodexEvent.ItemStarted(it, item)
                     else CodexEvent.ItemCompleted(it, item)
                 }
             }
@@ -459,7 +525,7 @@ class WebSocketCodexRepository(
         pending.entries.forEach { (id, deferred) -> if (pending.remove(id, deferred)) deferred.completeExceptionally(error) }
     }
 
-    private fun AppSettings.toConnectionConfig(): ConnectionConfig {
+    private fun AgentProfile.toConnectionConfig(): ConnectionConfig {
         val normalized = serverUrl.trim().removeSuffix("/")
         require(normalized.startsWith("ws://") || normalized.startsWith("wss://")) { "服务器地址必须以 ws:// 或 wss:// 开头" }
         require(token.isNotBlank()) { "请先在设置中填写 Token" }
@@ -512,7 +578,11 @@ class WebSocketCodexRepository(
         error = value.errorMessage(),
     )
 
-    private fun parseItem(value: JSONObject?): ThreadItem? {
+    private fun parseItem(
+        value: JSONObject?,
+        /** 读历史时默认 completed；流式 item/started 传入 inProgress */
+        compactionDefaultStatus: String = "completed",
+    ): ThreadItem? {
         value ?: return null
         val id = value.optString("id")
         if (id.isBlank()) return null
@@ -531,6 +601,7 @@ class WebSocketCodexRepository(
                 status = value.statusValue("completed"),
             )
             "reasoning" -> ThreadItem.Reasoning(id, value.optJSONArray("summary").textFragments())
+            "contextCompaction" -> ThreadItem.ContextCompaction(id, value.statusValue(compactionDefaultStatus))
             else -> null
         }
     }
@@ -621,6 +692,15 @@ class WebSocketCodexRepository(
                 }
             }
         }
+    }
+
+    private fun ReviewTarget.toJson(): JSONObject = when (this) {
+        is ReviewTarget.UncommittedChanges -> JSONObject().put("type", "uncommittedChanges")
+        is ReviewTarget.BaseBranch -> JSONObject().put("type", "baseBranch").put("branch", branch)
+        is ReviewTarget.Commit -> JSONObject().put("type", "commit").put("sha", sha).also { json ->
+            title?.let { json.put("title", it) }
+        }
+        is ReviewTarget.Custom -> JSONObject().put("type", "custom").put("instructions", instructions)
     }
 
     private fun protocolError(message: String) = IOException("Codex 协议错误：$message")

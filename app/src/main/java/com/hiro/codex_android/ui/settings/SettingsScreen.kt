@@ -1,7 +1,10 @@
 package com.hiro.codex_android.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,27 +15,36 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hiro.codex_android.data.AgentType
 import com.hiro.codex_android.data.ServiceLocator
+import com.hiro.codex_android.ui.components.AgentBadge
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,24 +79,52 @@ fun SettingsScreen(onBack: () -> Unit) {
                 .padding(horizontal = 16.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            // §0 连接信息
-            OutlinedTextField(
-                value = state.serverUrl,
-                onValueChange = vm::setServerUrl,
-                label = { Text("服务器地址 (WebSocket)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
+            // Agent 服务器：多个配置，新增/编辑即时生效，不经底部“保存”。
+            Text(
+                text = "Agent 服务器",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
-            OutlinedTextField(
-                value = state.token,
-                onValueChange = vm::setToken,
-                label = { Text("Token") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
+            state.profiles.forEach { profile ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { vm.startEditProfile(profile) },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AgentBadge(profile.type, size = 30.dp)
+                        Spacer(Modifier.padding(start = 10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = profile.displayName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = profile.serverUrl,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                        Switch(
+                            checked = profile.enabled,
+                            onCheckedChange = { vm.toggleProfileEnabled(profile) },
+                        )
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = vm::startAddProfile,
                 modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-            )
+            ) {
+                Text("添加 Agent 服务器")
+            }
 
             Text(
                 text = "语音识别（火山引擎）",
@@ -133,7 +173,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -199,8 +239,8 @@ fun SettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(4.dp))
             Button(
                 onClick = {
+                    // 只保存 ASR/TTS 等全局配置；Agent 服务器在弹窗里即时保存。
                     vm.save()
-                    // SharedPreferences 保存是同步提交到内存的；返回主页后随即用新配置刷新。
                     onBack()
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -209,4 +249,94 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
         }
     }
+
+    state.draft?.let { draft ->
+        ProfileEditDialog(
+            draft = draft,
+            error = state.draftError,
+            onChange = vm::updateDraft,
+            onSave = vm::saveDraft,
+            onDelete = vm::deleteDraftProfile,
+            onDismiss = vm::dismissDraft,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ProfileEditDialog(
+    draft: ProfileDraft,
+    error: String?,
+    onChange: ((ProfileDraft) -> ProfileDraft) -> Unit,
+    onSave: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (draft.id == null) "添加 Agent 服务器" else "编辑 Agent 服务器") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AgentType.entries.forEach { type ->
+                        FilterChip(
+                            selected = draft.type == type,
+                            enabled = type.supported,
+                            onClick = {
+                                onChange { d ->
+                                    d.copy(
+                                        type = type,
+                                        // 地址未改过时跟随类型默认值；手动改过则保留。
+                                        serverUrl = if (d.serverUrl.isBlank() ||
+                                            d.serverUrl == AgentType.defaultUrl(d.type)
+                                        ) {
+                                            AgentType.defaultUrl(type)
+                                        } else {
+                                            d.serverUrl
+                                        },
+                                    )
+                                }
+                            },
+                            label = {
+                                Text(if (type.supported) type.displayName else "${type.displayName}（暂未支持）")
+                            },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = draft.name,
+                    onValueChange = { name -> onChange { it.copy(name = name) } },
+                    label = { Text("名称") },
+                    placeholder = { Text(draft.type.displayName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = draft.serverUrl,
+                    onValueChange = { url -> onChange { it.copy(serverUrl = url) } },
+                    label = { Text("服务器地址 (WebSocket)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = draft.token,
+                    onValueChange = { token -> onChange { it.copy(token = token) } },
+                    label = { Text("Token") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                if (draft.id != null) {
+                    TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
+                        Text("删除此配置", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onSave) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }

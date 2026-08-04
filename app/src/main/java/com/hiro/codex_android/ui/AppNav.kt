@@ -16,10 +16,10 @@ import com.hiro.codex_android.ui.threads.ThreadListScreen
 object Routes {
     const val THREADS = "threads"
     const val SETTINGS = "settings"
-    const val CHAT = "chat/{threadId}"
+    const val CHAT = "chat/{profileId}/{threadId}"
 
-    /** "new" 表示新会话 */
-    fun chat(threadId: String) = "chat/$threadId"
+    /** threadId 为 "new" 表示新会话；profileId 决定走哪个 Agent 连接 */
+    fun chat(profileId: String, threadId: String) = "chat/$profileId/$threadId"
 }
 
 @Composable
@@ -33,20 +33,28 @@ fun AppNav() {
                 ThreadListScreen(
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = this,
-                    onOpenThread = { id -> nav.navigate(Routes.chat(id)) },
-                    onNewThread = { nav.navigate(Routes.chat("new")) },
+                    onOpenThread = { profileId, threadId -> nav.navigate(Routes.chat(profileId, threadId)) },
+                    onNewThread = { profileId -> nav.navigate(Routes.chat(profileId, "new")) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                 )
             }
             composable(
                 route = Routes.CHAT,
-                arguments = listOf(navArgument("threadId") { type = NavType.StringType }),
+                arguments = listOf(
+                    navArgument("profileId") { type = NavType.StringType },
+                    navArgument("threadId") { type = NavType.StringType },
+                ),
             ) { entry ->
                 ChatScreen(
+                    profileIdArg = entry.arguments?.getString("profileId").orEmpty(),
                     threadIdArg = entry.arguments?.getString("threadId") ?: "new",
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = this,
                     onBack = { nav.popBackStack() },
+                    onOpenThread = { threadId ->
+                        val profileId = entry.arguments?.getString("profileId").orEmpty()
+                        nav.navigate(Routes.chat(profileId, threadId))
+                    },
                 )
             }
             composable(Routes.SETTINGS) {

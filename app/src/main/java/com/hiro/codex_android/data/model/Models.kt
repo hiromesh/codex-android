@@ -81,7 +81,31 @@ sealed interface ThreadItem {
         override val id: String,
         val summary: List<String> = emptyList(),
     ) : ThreadItem
+
+    /** thread/compact/start 完成后的上下文压缩摘要卡片 */
+    data class ContextCompaction(
+        override val id: String,
+        val status: String = "completed",
+    ) : ThreadItem
 }
+
+/**
+ * review/start 的 target（tagged union，`type` 判别）。
+ * 见 docs/CODEX_ACTIONS_API.md §2。
+ */
+sealed interface ReviewTarget {
+    data object UncommittedChanges : ReviewTarget
+    data class BaseBranch(val branch: String) : ReviewTarget
+    data class Commit(val sha: String, val title: String? = null) : ReviewTarget
+    data class Custom(val instructions: String) : ReviewTarget
+}
+
+/** review/start 的 RPC 结果 */
+data class ReviewStartResult(
+    val turn: Turn,
+    /** inline 时 = 原会话；detached 时 = 新审查会话 */
+    val reviewThreadId: String,
+)
 
 /** 消息内容块，§3.6 turn/start 的 input 元素 */
 data class Content(
