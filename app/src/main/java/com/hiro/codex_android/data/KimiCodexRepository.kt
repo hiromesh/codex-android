@@ -204,9 +204,18 @@ class KimiCodexRepository(
         if (!includeTurns) return thread
         val messages = loadAllMessages(threadId)
         subscribeSession(threadId)
-        // 用 snapshot 补上进行中的 turn 文本与 pending approvals。
-        runCatching { applySnapshot(threadId) }
-        return thread.copy(turns = listOf(Turn(id = "history", status = "completed", items = messages)))
+        // 只补 approvals / in-flight / 游标，不要再用残缺历史整表覆盖当前 UI。
+        runCatching { applySnapshot(threadId, reloadMessages = false) }
+        val busy = session.optBoolean("busy")
+        return thread.copy(
+            turns = listOf(
+                Turn(
+                    id = "history",
+                    status = if (busy) "inProgress" else "completed",
+                    items = messages,
+                ),
+            ),
+        )
     }
 
     override suspend fun archiveThread(threadId: String) {
@@ -494,7 +503,7 @@ class KimiCodexRepository(
                 if (sessionId.isNotBlank()) {
                     subscribedSessions.remove(sessionId)
                     runCatching {
-                        applySnapshot(sessionId)
+                        applySnapshot(sessionId, reloadMessages = true)
                         subscribeSession(sessionId)
                     }
                 }
@@ -699,16 +708,22 @@ class KimiCodexRepository(
         )
     }
 
-    private suspend fun applySnapshot(sessionId: String) {
+    /**
+     * @param reloadMessages true 时用 REST 历史整表对账（仅断线 resync）；
+     *   日常 read/subscribe 必须为 false——服务端常把工具前的 thinking 落成空串，
+     *   整表覆盖会把直播正确的「thinking→工具→thinking→回复」打成「工具→thinking→回复」。
+     */
+    private suspend fun applySnapshot(sessionId: String, reloadMessages: Boolean = false) {
         val snap = restGet("/sessions/$sessionId/snapshot")
         snap.optJSONObject("cursor")?.let { sessionCursors[sessionId] = it }
-        // as_of_seq / epoch 也可能在顶层
         if (snap.has("as_of_seq")) {
             val cursor = JSONObject().put("seq", snap.optLong("as_of_seq"))
             snap.optString("epoch").takeIf { it.isNotBlank() }?.let { cursor.put("epoch", it) }
             sessionCursors[sessionId] = cursor
         }
         snap.optJSONArray("pending_approvals").objects().forEach { emitApproval(sessionId, it) }
+        val sessionObj = snap.optJSONObject("session")
+        val busy = sessionObj?.optBoolean("busy") == true
         val inFlight = snap.optJSONObject("in_flight_turn")
         if (inFlight != null) {
             inFlight.optString("current_prompt_id").takeIf { it.isNotBlank() }?.let {
@@ -717,24 +732,43 @@ class KimiCodexRepository(
             val turnId = inFlight.optInt("turn_id")
             val step = inFlight.optInt("step", currentStep(sessionId, turnId))
             stepByTurnKey[turnKey(sessionId, turnId)] = step
+            val thinking = inFlight.optString("thinking_text")
+            if (thinking.isNotBlank()) {
+                val itemId = reasoningItemId(sessionId, turnId, step)
+                if (startedReasoningItems.add(itemId)) {
+                    _events.emit(
+                        CodexEvent.ItemStarted(sessionId, ThreadItem.Reasoning(itemId, listOf(thinking))),
+                    )
+                }
+            }
             val asst = inFlight.optString("assistant_text")
             if (asst.isNotBlank()) {
                 val itemId = assistantItemId(sessionId, turnId, step)
-                startedAssistantItems.add(itemId)
-                _events.emit(CodexEvent.ItemStarted(sessionId, ThreadItem.AgentMessage(itemId, asst)))
+                if (startedAssistantItems.add(itemId)) {
+                    _events.emit(CodexEvent.ItemStarted(sessionId, ThreadItem.AgentMessage(itemId, asst)))
+                }
             }
+        }
+        if (!reloadMessages) {
+            // 只同步会话元数据，items 留空表示「不要覆盖本地气泡」。
+            _events.emit(
+                CodexEvent.ThreadReconciled(
+                    parseSessionAsThread(sessionObj ?: restGet("/sessions/$sessionId")).copy(
+                        turns = listOf(
+                            Turn(id = "meta", status = if (busy) "inProgress" else "completed", items = emptyList()),
+                        ),
+                    ),
+                ),
+            )
+            return
         }
         _events.emit(
             CodexEvent.ThreadReconciled(
-                parseSessionAsThread(snap.optJSONObject("session") ?: restGet("/sessions/$sessionId")).copy(
+                parseSessionAsThread(sessionObj ?: restGet("/sessions/$sessionId")).copy(
                     turns = listOf(
                         Turn(
                             id = "history",
-                            status = if (snap.optJSONObject("session")?.optBoolean("busy") == true) {
-                                "inProgress"
-                            } else {
-                                "completed"
-                            },
+                            status = if (busy) "inProgress" else "completed",
                             items = loadAllMessages(sessionId),
                         ),
                     ),
@@ -799,27 +833,59 @@ class KimiCodexRepository(
                 }
             }
             "assistant" -> buildList {
-                val texts = content.filter { it.optString("type") == "text" }.map { it.optString("text") }
-                val thinking = content.filter { it.optString("type") == "thinking" }
-                    .map { it.optString("thinking") }
-                    .filter { it.isNotBlank() }
-                if (thinking.isNotEmpty()) add(ThreadItem.Reasoning("$id-think", thinking))
-                if (texts.isNotEmpty()) add(ThreadItem.AgentMessage(id, texts.joinToString("")))
-                content.filter { it.optString("type") == "tool_use" }.forEachIndexed { index, tool ->
-                    val callId = tool.optString("tool_call_id").ifBlank { "$id-tool-$index" }
-                    add(
-                        ThreadItem.CommandExecution(
-                            // 与后续 tool_result 区分：result 会合并进同 callId 的卡片。
-                            id = callId,
-                            command = buildString {
-                                append(tool.optString("tool_name"))
-                                val input = tool.opt("input")
-                                if (input != null && input != JSONObject.NULL) append(' ').append(input.toString())
-                            },
-                            status = "completed",
-                        ),
-                    )
+                // 按 content 顺序展开，保留 thinking → text → tool → thinking → text。
+                // 旧逻辑先抽全部 thinking 再拼全部 text，会导致后段 thinking 丢位置/被盖住。
+                var thinkIndex = 0
+                var textIndex = 0
+                val pendingText = StringBuilder()
+                fun flushText() {
+                    if (pendingText.isEmpty()) return
+                    val itemId = if (textIndex == 0) id else "$id-text-$textIndex"
+                    add(ThreadItem.AgentMessage(itemId, pendingText.toString()))
+                    textIndex++
+                    pendingText.clear()
                 }
+                content.forEachIndexed { index, block ->
+                    when (block.optString("type")) {
+                        "thinking" -> {
+                            flushText()
+                            val think = block.optString("thinking")
+                                .ifBlank { block.optString("text") }
+                                .trim()
+                            if (think.isEmpty()) return@forEachIndexed
+                            val last = lastOrNull()
+                            if (last is ThreadItem.Reasoning) {
+                                // 连续 thinking 段合并（与 kimi-web 一致）
+                                set(lastIndex, last.copy(summary = last.summary + think))
+                            } else {
+                                add(ThreadItem.Reasoning("$id-think-$thinkIndex", listOf(think)))
+                                thinkIndex++
+                            }
+                        }
+                        "text" -> {
+                            val piece = block.optString("text")
+                            if (piece.isNotEmpty()) pendingText.append(piece)
+                        }
+                        "tool_use" -> {
+                            flushText()
+                            val callId = block.optString("tool_call_id").ifBlank { "$id-tool-$index" }
+                            add(
+                                ThreadItem.CommandExecution(
+                                    id = callId,
+                                    command = buildString {
+                                        append(block.optString("tool_name"))
+                                        val input = block.opt("input")
+                                        if (input != null && input != JSONObject.NULL) {
+                                            append(' ').append(input.toString())
+                                        }
+                                    },
+                                    status = "completed",
+                                ),
+                            )
+                        }
+                    }
+                }
+                flushText()
             }
             "tool" -> content.filter { it.optString("type") == "tool_result" }.mapIndexed { index, tool ->
                 val callId = tool.optString("tool_call_id").ifBlank { "$id-result-$index" }

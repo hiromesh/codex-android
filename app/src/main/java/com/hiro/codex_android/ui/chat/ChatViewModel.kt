@@ -578,6 +578,9 @@ class ChatViewModel(
     private fun applyServerThread(thread: Thread) {
         val activeTurn = thread.turns.lastOrNull { it.status == "inProgress" }
         val lastError = thread.turns.lastOrNull()?.takeIf { it.status == "failed" }?.error
+        val incomingItems = thread.turns.flatMap(Turn::items)
+        // 对账若未带 items（Kimi snapshot 元数据同步），保留本地气泡，避免直播被残缺历史盖掉。
+        val replaceItems = incomingItems.isNotEmpty()
         _uiState.update { state ->
             if (activeTurn != null) {
                 val modelId = thread.model ?: state.model
@@ -596,7 +599,7 @@ class ChatViewModel(
                     title = thread.name ?: thread.preview.ifBlank { state.title },
                     model = modelId,
                     effort = resolveEffort(modelInfo, thread.effort ?: state.effort),
-                    items = thread.turns.flatMap(Turn::items),
+                    items = if (replaceItems) incomingItems else state.items,
                     generating = false,
                     currentTurnId = null,
                     // 轮次结束时不可能有待应答审批（服务端在等应答就不会结束轮次），可安全清除。
