@@ -64,6 +64,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.hiro.codex_android.data.AgentType
 import com.hiro.codex_android.data.CodexEvent
 import com.hiro.codex_android.data.model.ApprovalDecision
 import com.hiro.codex_android.data.model.ModelInfo
@@ -433,6 +434,7 @@ fun ApprovalDialog(
 fun ChatInputBar(
     generating: Boolean,
     actionBusy: Boolean = false,
+    agentType: AgentType? = null,
     model: String,
     effort: String,
     models: List<ModelInfo>,
@@ -445,6 +447,12 @@ fun ChatInputBar(
     onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
+    val agentLabel = when (agentType) {
+        AgentType.KIMI -> "Kimi"
+        AgentType.CODEX -> "Codex"
+        null -> "Agent"
+        else -> agentType.displayName
+    }
     val inputState = rememberTextFieldState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -519,7 +527,7 @@ fun ChatInputBar(
                 TextField(
                     state = inputState,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
-                    placeholder = { Text("给 Codex 发消息…") },
+                    placeholder = { Text("给 $agentLabel 发消息…") },
                     lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 4),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                     colors = TextFieldDefaults.colors(

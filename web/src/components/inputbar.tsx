@@ -4,6 +4,8 @@ import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, MicIcon,
 
 interface InputBarProps {
   generating: boolean;
+  /** 展示名，如 Codex / Kimi；缺省按 Codex */
+  agentName?: string;
   model: string;
   effort: string;
   models: ModelInfo[];
@@ -19,6 +21,7 @@ interface InputBarProps {
 
 export function ChatInputBar(props: InputBarProps) {
   const { generating, model, effort, models, onSelectConfiguration, tokenUsage, asrTranscript, asrRecording } = props;
+  const agentName = props.agentName?.trim() || "Codex";
   const [text, setText] = useState("");
   const [voicePrefix, setVoicePrefix] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -49,7 +52,7 @@ export function ChatInputBar(props: InputBarProps) {
       <textarea
         ref={textareaRef}
         className="input-text"
-        placeholder="给 Codex 发消息…"
+        placeholder={`给 ${agentName} 发消息…`}
         value={text}
         rows={1}
         onChange={(e) => {

@@ -533,7 +533,22 @@ class ChatViewModel(
         _uiState.update { state ->
             val index = state.items.indexOfFirst { it.id == item.id }
             if (index >= 0) {
-                state.copy(items = state.items.toMutableList().apply { set(index, item) })
+                val existing = state.items[index]
+                val merged = when {
+                    // completed 可能只带 output/status；保留 started 时的工具名，避免被 id 盖掉。
+                    item is ThreadItem.CommandExecution && existing is ThreadItem.CommandExecution -> {
+                        item.copy(
+                            command = item.command.takeIf { it.isNotBlank() && it != item.id }
+                                ?: existing.command,
+                            cwd = item.cwd.ifBlank { existing.cwd },
+                            aggregatedOutput = item.aggregatedOutput.ifBlank { existing.aggregatedOutput },
+                            exitCode = item.exitCode ?: existing.exitCode,
+                            durationMs = item.durationMs ?: existing.durationMs,
+                        )
+                    }
+                    else -> item
+                }
+                state.copy(items = state.items.toMutableList().apply { set(index, merged) })
             } else if (item is ThreadItem.Reasoning && item.summary.isEmpty()) {
                 // 默认未开启摘要时不会产生空的“思考过程”折叠项。
                 state

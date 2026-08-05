@@ -70,6 +70,12 @@ class KimiCodexRepository(
     private val activePromptBySession = ConcurrentHashMap<String, String>()
     /** "$sessionId:$turnId" → prompt_id */
     private val promptByTurnKey = ConcurrentHashMap<String, String>()
+    /** "$sessionId:$turnId" → 当前 step；同 turn 多段 assistant 文本靠 step 分气泡。 */
+    private val stepByTurnKey = ConcurrentHashMap<String, Int>()
+    /** 工具打断文本后，若服务端未发 turn.step.started，下一段 delta 需自行 +1 step。 */
+    private val pendingAssistantStepBump = ConcurrentHashMap.newKeySet<String>()
+    /** toolCallId → 启动时拼好的命令展示文案；result 事件常不带 name，靠这里补。 */
+    private val toolCommandById = ConcurrentHashMap<String, String>()
     /** 已为该 turn 发出过 AgentMessage ItemStarted */
     private val startedAssistantItems = ConcurrentHashMap.newKeySet<String>()
     private val startedReasoningItems = ConcurrentHashMap.newKeySet<String>()
@@ -515,13 +521,25 @@ class KimiCodexRepository(
             "turn.started" -> {
                 val turnId = payload.optInt("turnId")
                 val promptId = activePromptBySession[sessionId] ?: "turn-$turnId"
-                promptByTurnKey["$sessionId:$turnId"] = promptId
-                startedAssistantItems.remove(assistantItemId(sessionId, turnId))
-                startedReasoningItems.remove(reasoningItemId(sessionId, turnId))
+                val key = turnKey(sessionId, turnId)
+                promptByTurnKey[key] = promptId
+                stepByTurnKey[key] = 0
+                pendingAssistantStepBump.remove(key)
+                startedAssistantItems.removeIf { it.startsWith("asst-$sessionId-$turnId-") }
+                startedReasoningItems.removeIf { it.startsWith("think-$sessionId-$turnId-") }
                 _events.emit(CodexEvent.TurnStarted(sessionId, promptId))
+            }
+            "turn.step.started" -> {
+                val turnId = payload.optInt("turnId")
+                val step = payload.optInt("step")
+                val key = turnKey(sessionId, turnId)
+                stepByTurnKey[key] = step
+                // step 事件已切换气泡，取消工具触发的兜底 bump，避免 step+1 两次。
+                pendingAssistantStepBump.remove(key)
             }
             "assistant.delta" -> {
                 val turnId = payload.optInt("turnId")
+                maybeBumpAssistantStep(sessionId, turnId)
                 val itemId = assistantItemId(sessionId, turnId)
                 val delta = payload.optString("delta")
                 if (startedAssistantItems.add(itemId)) {
@@ -533,6 +551,7 @@ class KimiCodexRepository(
             }
             "thinking.delta" -> {
                 val turnId = payload.optInt("turnId")
+                maybeBumpAssistantStep(sessionId, turnId)
                 val itemId = reasoningItemId(sessionId, turnId)
                 val delta = payload.optString("delta")
                 if (startedReasoningItems.add(itemId)) {
@@ -543,13 +562,17 @@ class KimiCodexRepository(
                 }
             }
             "tool.call.started" -> {
+                val turnId = payload.optInt("turnId")
                 val toolCallId = payload.optString("toolCallId")
                 val name = payload.optString("name")
                 val args = payload.opt("args")
                 val command = buildString {
                     append(name)
                     if (args != null && args != JSONObject.NULL) append(' ').append(args.toString())
-                }
+                }.ifBlank { toolCallId }
+                if (toolCallId.isNotBlank()) toolCommandById[toolCallId] = command
+                // 工具打断当前 assistant 段；若之后没有 turn.step.started，下一段文本自行开新气泡。
+                if (turnId >= 0) pendingAssistantStepBump.add(turnKey(sessionId, turnId))
                 _events.emit(
                     CodexEvent.ItemStarted(
                         sessionId,
@@ -563,12 +586,17 @@ class KimiCodexRepository(
                 if (toolCallId.isBlank()) return
                 val output = payload.opt("output")?.toString().orEmpty()
                 val isError = payload.optBoolean("isError") || payload.optBoolean("is_error")
+                // result 帧经常只有 id；不要用 id 覆盖启动时写好的工具名。
+                val command = toolCommandById.remove(toolCallId)
+                    ?: payload.optString("name").takeIf { it.isNotBlank() }
+                    ?: payload.optString("toolName").takeIf { it.isNotBlank() }
+                    ?: ""
                 _events.emit(
                     CodexEvent.ItemCompleted(
                         sessionId,
                         ThreadItem.CommandExecution(
                             id = toolCallId,
-                            command = toolCallId,
+                            command = command,
                             status = if (isError) "failed" else "completed",
                             aggregatedOutput = output,
                             exitCode = if (isError) 1 else 0,
@@ -578,12 +606,15 @@ class KimiCodexRepository(
             }
             "turn.ended" -> {
                 val turnId = payload.optInt("turnId")
-                val promptId = promptByTurnKey.remove("$sessionId:$turnId")
+                val key = turnKey(sessionId, turnId)
+                val promptId = promptByTurnKey.remove(key)
                     ?: activePromptBySession[sessionId]
                     ?: "turn-$turnId"
                 if (activePromptBySession[sessionId] == promptId) {
                     activePromptBySession.remove(sessionId)
                 }
+                stepByTurnKey.remove(key)
+                pendingAssistantStepBump.remove(key)
                 val reason = payload.optString("reason", "completed")
                 val status = when (reason) {
                     "cancelled" -> "interrupted"
@@ -591,11 +622,6 @@ class KimiCodexRepository(
                     else -> "completed"
                 }
                 val error = payload.optJSONObject("error")?.optString("message")
-                // 校对完整 assistant 文本：用 ItemCompleted 收尾（若已有流式内容）
-                val asstId = assistantItemId(sessionId, turnId)
-                if (startedAssistantItems.contains(asstId)) {
-                    // 不覆盖文本，仅靠 ChatViewModel 已有 delta；这里不发空 completed。
-                }
                 _events.emit(CodexEvent.TurnCompleted(sessionId, promptId, status, error))
             }
             "compaction.started" -> {
@@ -689,9 +715,11 @@ class KimiCodexRepository(
                 activePromptBySession[sessionId] = it
             }
             val turnId = inFlight.optInt("turn_id")
+            val step = inFlight.optInt("step", currentStep(sessionId, turnId))
+            stepByTurnKey[turnKey(sessionId, turnId)] = step
             val asst = inFlight.optString("assistant_text")
             if (asst.isNotBlank()) {
-                val itemId = assistantItemId(sessionId, turnId)
+                val itemId = assistantItemId(sessionId, turnId, step)
                 startedAssistantItems.add(itemId)
                 _events.emit(CodexEvent.ItemStarted(sessionId, ThreadItem.AgentMessage(itemId, asst)))
             }
@@ -747,17 +775,29 @@ class KimiCodexRepository(
         val role = msg.optString("role")
         val content = msg.optJSONArray("content").objects()
         return when (role) {
-            "user" -> listOf(
-                ThreadItem.UserMessage(
-                    id,
-                    content.mapNotNull { block ->
+            "user" -> {
+                if (!isDisplayableUserMessage(msg)) {
+                    emptyList()
+                } else {
+                    val blocks = content.mapNotNull { block ->
                         when (block.optString("type")) {
-                            "text" -> Content("text", block.optString("text"))
+                            "text" -> {
+                                val raw = block.optString("text")
+                                val cleaned = stripHiddenSystemMarkup(raw)
+                                if (cleaned.isBlank() && raw.isNotBlank()) null
+                                else Content("text", cleaned.ifBlank { raw })
+                            }
                             else -> null
                         }
-                    }.ifEmpty { listOf(Content("text", "")) },
-                ),
-            )
+                    }
+                    when {
+                        blocks.isEmpty() -> emptyList()
+                        blocks.all { it.text.isBlank() } -> emptyList()
+                        isHiddenSystemUserText(blocks.joinToString("\n") { it.text }) -> emptyList()
+                        else -> listOf(ThreadItem.UserMessage(id, blocks))
+                    }
+                }
+            }
             "assistant" -> buildList {
                 val texts = content.filter { it.optString("type") == "text" }.map { it.optString("text") }
                 val thinking = content.filter { it.optString("type") == "thinking" }
@@ -856,10 +896,54 @@ class KimiCodexRepository(
         )
     }
 
-    private fun assistantItemId(sessionId: String, turnId: Int) = "asst-$sessionId-$turnId"
-    private fun reasoningItemId(sessionId: String, turnId: Int) = "think-$sessionId-$turnId"
+    private fun turnKey(sessionId: String, turnId: Int) = "$sessionId:$turnId"
+
+    /**
+     * 与 kimi-web `isDisplayableUserMessage` 对齐：只展示真人输入；
+     * compaction / injection / hook / cron 等系统注入的 user 角色消息不展示。
+     */
+    private fun isDisplayableUserMessage(msg: JSONObject): Boolean {
+        val origin = msg.optJSONObject("metadata")?.optJSONObject("origin") ?: return true
+        val kind = origin.optString("kind")
+        if (kind.isBlank() || kind == "user") return true
+        if (kind == "skill_activation" || kind == "plugin_command") {
+            return origin.optString("trigger") == "user-slash"
+        }
+        return false
+    }
+
+    /** `<system-reminder>…</system-reminder>` 等纯系统提示，历史里当 user 出现也不展示。 */
+    private fun isHiddenSystemUserText(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return true
+        return stripHiddenSystemMarkup(trimmed).isEmpty() &&
+            (trimmed.contains("<system-reminder>", ignoreCase = true) ||
+                trimmed.contains("<system>", ignoreCase = true))
+    }
+
+    private fun stripHiddenSystemMarkup(text: String): String =
+        text.replace(SYSTEM_REMINDER_REGEX, "").replace(SYSTEM_TAG_REGEX, "").trim()
+
+    private fun currentStep(sessionId: String, turnId: Int): Int =
+        stepByTurnKey[turnKey(sessionId, turnId)] ?: 0
+
+    /** 工具打断后若没收到 step.started，在下一段文本/思考 delta 时 +1 step 开新气泡。 */
+    private fun maybeBumpAssistantStep(sessionId: String, turnId: Int) {
+        val key = turnKey(sessionId, turnId)
+        if (!pendingAssistantStepBump.remove(key)) return
+        stepByTurnKey[key] = currentStep(sessionId, turnId) + 1
+    }
+
+    private fun assistantItemId(sessionId: String, turnId: Int, step: Int = currentStep(sessionId, turnId)) =
+        "asst-$sessionId-$turnId-$step"
+
+    private fun reasoningItemId(sessionId: String, turnId: Int, step: Int = currentStep(sessionId, turnId)) =
+        "think-$sessionId-$turnId-$step"
 
     private companion object {
+        val SYSTEM_REMINDER_REGEX = Regex("(?is)<system-reminder\\b[^>]*>.*?</system-reminder>")
+        val SYSTEM_TAG_REGEX = Regex("(?is)<system\\b[^>]*>.*?</system>")
+
         const val CONNECT_TIMEOUT_MS = 15_000L
         const val RPC_TIMEOUT_MS = 30_000L
 

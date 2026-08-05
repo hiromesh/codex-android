@@ -135,6 +135,7 @@ fun ChatScreen(
             ChatInputBar(
                 generating = state.generating,
                 actionBusy = state.actionBusy,
+                agentType = agentType,
                 model = state.model,
                 effort = state.effort,
                 models = state.availableModels,
