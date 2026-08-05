@@ -88,15 +88,16 @@ class ChatViewModel(
                 .onSuccess { models ->
                     _uiState.update { state ->
                         val preferred = models.firstOrNull { it.isDefault } ?: models.firstOrNull()
-                        val modelValid = models.any { it.id == state.model }
+                        val modelId = if (models.any { it.id == state.model }) {
+                            state.model
+                        } else {
+                            preferred?.id ?: state.model
+                        }
+                        val modelInfo = models.firstOrNull { it.id == modelId } ?: preferred
                         state.copy(
                             availableModels = models,
-                            model = if (modelValid) state.model else preferred?.id ?: state.model,
-                            effort = if (modelValid) {
-                                state.effort
-                            } else {
-                                preferred?.defaultReasoningEffort ?: state.effort
-                            },
+                            model = modelId,
+                            effort = resolveEffort(modelInfo, state.effort),
                         )
                     }
                 }
@@ -121,11 +122,13 @@ class ChatViewModel(
                 )
             }.onSuccess { thread ->
                     _uiState.update {
+                        val modelId = thread.model ?: it.model
+                        val modelInfo = it.availableModels.firstOrNull { m -> m.id == modelId }
                         it.copy(
                             loading = false,
                             title = thread.name ?: thread.preview.ifBlank { "会话" },
-                            model = thread.model ?: it.model,
-                            effort = thread.effort ?: it.effort,
+                            model = modelId,
+                            effort = resolveEffort(modelInfo, thread.effort ?: it.effort),
                             items = thread.turns.flatMap(Turn::items),
                         )
                     }
@@ -323,9 +326,12 @@ class ChatViewModel(
                     // thread/start 只带模型；effort 在建会话后、首条 turn 前写入设置。
                     val selection = _uiState.value
                     val thread = repo.startThread(selection.model.ifBlank { null })
-                    if (selection.effort.isNotBlank()) {
-                        repo.updateThreadSettings(thread.id, effort = selection.effort)
-                    }
+                    // 建会话后把当前 UI 上的 model + effort 一并写入；Kimi 的 create 本身不生效。
+                    repo.updateThreadSettings(
+                        thread.id,
+                        model = selection.model.ifBlank { thread.model },
+                        effort = selection.effort.ifBlank { null },
+                    )
                     _uiState.update {
                         it.copy(
                             threadId = thread.id,
@@ -559,18 +565,22 @@ class ChatViewModel(
         val lastError = thread.turns.lastOrNull()?.takeIf { it.status == "failed" }?.error
         _uiState.update { state ->
             if (activeTurn != null) {
+                val modelId = thread.model ?: state.model
+                val modelInfo = state.availableModels.firstOrNull { it.id == modelId }
                 state.copy(
                     title = thread.name ?: thread.preview.ifBlank { state.title },
-                    model = thread.model ?: state.model,
-                    effort = thread.effort ?: state.effort,
+                    model = modelId,
+                    effort = resolveEffort(modelInfo, thread.effort ?: state.effort),
                     generating = true,
                     currentTurnId = activeTurn.id,
                 )
             } else {
+                val modelId = thread.model ?: state.model
+                val modelInfo = state.availableModels.firstOrNull { it.id == modelId }
                 state.copy(
                     title = thread.name ?: thread.preview.ifBlank { state.title },
-                    model = thread.model ?: state.model,
-                    effort = thread.effort ?: state.effort,
+                    model = modelId,
+                    effort = resolveEffort(modelInfo, thread.effort ?: state.effort),
                     items = thread.turns.flatMap(Turn::items),
                     generating = false,
                     currentTurnId = null,
@@ -583,6 +593,19 @@ class ChatViewModel(
     }
 
     private fun localId(): String = "local-${UUID.randomUUID()}"
+
+    /**
+     * 把当前 effort 对齐到模型支持的档位：空值、或不在 support 列表里时，改用模型默认/第一项。
+     * Kimi 常见 support 不含 medium，而 UI 初始是 medium，不夹会显示对不上勾选。
+     */
+    private fun resolveEffort(model: ModelInfo?, effort: String?): String {
+        val supported = model?.supportedReasoningEfforts.orEmpty()
+        val current = effort?.takeIf { it.isNotBlank() }
+        if (current != null && (supported.isEmpty() || current in supported)) return current
+        val fallback = model?.defaultReasoningEffort?.takeIf { it.isNotBlank() }
+        if (fallback != null && (supported.isEmpty() || fallback in supported)) return fallback
+        return supported.firstOrNull() ?: current ?: "medium"
+    }
 
     override fun onCleared() {
         stopAsr()

@@ -136,14 +136,45 @@ class KimiCodexRepository(
                     )
                 json.put("workspace_id", workspace.optString("id"))
             }
-            if (!model.isNullOrBlank()) {
-                json.put("agent_config", JSONObject().put("model", model))
+        }
+        // POST /sessions 会忽略 body.agent_config（服务端硬编码 model:''），
+        // 模型 / yolo 必须紧接着用 /profile 写入，否则首条 prompt 会报 Model not set。
+        val session = restPost("/sessions", body)
+        val threadId = session.optString("id")
+        if (threadId.isBlank()) throw IOException("Kimi 建会话响应缺少 id")
+
+        val resolvedModel = model?.takeIf { it.isNotBlank() } ?: resolveDefaultModel()
+        val agentConfig = JSONObject().put("permission_mode", "yolo").also { cfg ->
+            if (!resolvedModel.isNullOrBlank()) cfg.put("model", resolvedModel)
+        }
+        restPost("/sessions/$threadId/profile", JSONObject().put("agent_config", agentConfig))
+
+        val thread = parseSessionAsThread(restGet("/sessions/$threadId")).let { parsed ->
+            // profile 后的 GET 若仍投影空 model，用我们刚写入的值补上，方便 UI。
+            if (parsed.model.isNullOrBlank() && !resolvedModel.isNullOrBlank()) {
+                parsed.copy(model = resolvedModel)
+            } else {
+                parsed
             }
         }
-        val session = restPost("/sessions", body)
-        val thread = parseSessionAsThread(session)
         subscribeSession(thread.id)
         return thread
+    }
+
+    /** 取服务端默认模型（providers.default_model，否则 models 列表第一项）。 */
+    private suspend fun resolveDefaultModel(): String? {
+        val fromProviders = runCatching {
+            restGet("/providers").optJSONArray("items").objects()
+                .mapNotNull { it.optString("default_model").takeIf(String::isNotBlank) }
+                .firstOrNull()
+        }.getOrNull()
+        if (!fromProviders.isNullOrBlank()) return fromProviders
+        return runCatching {
+            restGet("/models").optJSONArray("items").objects()
+                .firstOrNull()
+                ?.optString("model")
+                ?.takeIf(String::isNotBlank)
+        }.getOrNull()
     }
 
     /** 取最近打开的 workspace；没有已注册工作区时返回 null。 */
@@ -239,13 +270,22 @@ class KimiCodexRepository(
         }.getOrDefault(emptySet())
         val items = data.optJSONArray("items").objects().map { item ->
             val id = item.optString("model")
+            val efforts = item.optJSONArray("support_efforts").strings()
+            val caps = item.optJSONArray("capabilities").strings()
             ModelInfo(
                 id = id,
                 displayName = item.optString("display_name").ifBlank { id },
                 description = item.optString("provider"),
                 isDefault = id in defaultIds,
-                supportedReasoningEfforts = item.optJSONArray("support_efforts").strings(),
-                defaultReasoningEffort = item.optString("default_effort").ifBlank { "medium" },
+                supportedReasoningEfforts = when {
+                    efforts.isNotEmpty() -> efforts
+                    // 有 thinking 能力但未声明档位时，用 Kimi 常见集合，避免二级菜单空白。
+                    "thinking" in caps -> listOf("off", "low", "medium", "high", "xhigh", "max")
+                    else -> emptyList()
+                },
+                defaultReasoningEffort = item.optString("default_effort").ifBlank {
+                    if ("thinking" in caps) "high" else "medium"
+                },
             )
         }
         // 若 providers 没标 default，把第一项当作默认，方便新会话选中。
@@ -677,26 +717,33 @@ class KimiCodexRepository(
 
     // ── 解析 ──────────────────────────────────────────────────────────────
 
+    /**
+     * Kimi `GET .../messages` 默认 **newest first**（见 kap-server messageHistory）。
+     * 聊天 UI 要时间正序，所以整页拉完后 reverse；翻更早的页用 `before_id`（不是 after_id）。
+     */
     private suspend fun loadAllMessages(sessionId: String): List<ThreadItem> {
-        val items = mutableListOf<ThreadItem>()
-        var afterId: String? = null
-        repeat(20) {
+        val newestFirst = mutableListOf<JSONObject>()
+        var beforeId: String? = null
+        for (i in 0 until 20) {
             val path = buildString {
                 append("/sessions/$sessionId/messages?page_size=100")
-                if (!afterId.isNullOrBlank()) append("&after_id=").append(afterId)
+                if (!beforeId.isNullOrBlank()) append("&before_id=").append(beforeId)
             }
             val page = restGet(path)
             val batch = page.optJSONArray("items").objects()
-            if (batch.isEmpty()) return items
-            batch.forEach { msg -> items += parseMessageItems(msg) }
-            afterId = batch.last().optString("id")
-            if (!page.optBoolean("has_more")) return items
+            if (batch.isEmpty()) break
+            newestFirst += batch
+            // 本页最后一条是当前页里最旧的，用它继续往更早翻。
+            beforeId = batch.last().optString("id")
+            if (!page.optBoolean("has_more")) break
         }
-        return items
+        return newestFirst.asReversed()
+            .flatMap(::parseMessageItems)
+            .let(::ensureUniqueItemIds)
     }
 
     private fun parseMessageItems(msg: JSONObject): List<ThreadItem> {
-        val id = msg.optString("id")
+        val id = msg.optString("id").ifBlank { "msg-${msg.hashCode()}" }
         val role = msg.optString("role")
         val content = msg.optJSONArray("content").objects()
         return when (role) {
@@ -715,12 +762,15 @@ class KimiCodexRepository(
                 val texts = content.filter { it.optString("type") == "text" }.map { it.optString("text") }
                 val thinking = content.filter { it.optString("type") == "thinking" }
                     .map { it.optString("thinking") }
+                    .filter { it.isNotBlank() }
                 if (thinking.isNotEmpty()) add(ThreadItem.Reasoning("$id-think", thinking))
                 if (texts.isNotEmpty()) add(ThreadItem.AgentMessage(id, texts.joinToString("")))
-                content.filter { it.optString("type") == "tool_use" }.forEach { tool ->
+                content.filter { it.optString("type") == "tool_use" }.forEachIndexed { index, tool ->
+                    val callId = tool.optString("tool_call_id").ifBlank { "$id-tool-$index" }
                     add(
                         ThreadItem.CommandExecution(
-                            id = tool.optString("tool_call_id").ifBlank { "$id-tool" },
+                            // 与后续 tool_result 区分：result 会合并进同 callId 的卡片。
+                            id = callId,
                             command = buildString {
                                 append(tool.optString("tool_name"))
                                 val input = tool.opt("input")
@@ -731,16 +781,60 @@ class KimiCodexRepository(
                     )
                 }
             }
-            "tool" -> content.filter { it.optString("type") == "tool_result" }.map { tool ->
+            "tool" -> content.filter { it.optString("type") == "tool_result" }.mapIndexed { index, tool ->
+                val callId = tool.optString("tool_call_id").ifBlank { "$id-result-$index" }
+                // 单独 id，避免与 tool_use 的 callId 在 LazyColumn 里撞 key 闪退；
+                // 下面 ensure 之前会先尝试合并进已有 CommandExecution。
                 ThreadItem.CommandExecution(
-                    id = tool.optString("tool_call_id").ifBlank { id },
-                    command = tool.optString("tool_call_id"),
+                    id = "$callId-result",
+                    command = callId,
                     status = if (tool.optBoolean("is_error")) "failed" else "completed",
                     aggregatedOutput = tool.opt("output")?.toString().orEmpty(),
+                    exitCode = if (tool.optBoolean("is_error")) 1 else 0,
                 )
             }
             else -> emptyList()
         }
+    }
+
+    /** 合并 tool_result 到对应 tool_use，并保证列表 item id 全局唯一（Compose key 要求）。 */
+    private fun ensureUniqueItemIds(items: List<ThreadItem>): List<ThreadItem> {
+        val merged = mutableListOf<ThreadItem>()
+        for (item in items) {
+            if (item is ThreadItem.CommandExecution && item.id.endsWith("-result")) {
+                val callId = item.id.removeSuffix("-result")
+                val idx = merged.indexOfLast { it is ThreadItem.CommandExecution && it.id == callId }
+                if (idx >= 0) {
+                    val existing = merged[idx] as ThreadItem.CommandExecution
+                    merged[idx] = existing.copy(
+                        status = item.status,
+                        aggregatedOutput = item.aggregatedOutput.ifBlank { existing.aggregatedOutput },
+                        exitCode = item.exitCode ?: existing.exitCode,
+                    )
+                    continue
+                }
+            }
+            merged += item
+        }
+        val seen = mutableSetOf<String>()
+        return merged.map { item ->
+            var id = item.id.ifBlank { "item" }
+            if (seen.add(id)) return@map item
+            var n = 2
+            while (!seen.add("$id#$n")) n++
+            rewriteItemId(item, "$id#$n")
+        }
+    }
+
+    private fun rewriteItemId(item: ThreadItem, newId: String): ThreadItem = when (item) {
+        is ThreadItem.UserMessage -> item.copy(id = newId)
+        is ThreadItem.AgentMessage -> item.copy(id = newId)
+        is ThreadItem.CommandExecution -> item.copy(id = newId)
+        is ThreadItem.FileChange -> item.copy(id = newId)
+        is ThreadItem.Plan -> item.copy(id = newId)
+        is ThreadItem.WebSearch -> item.copy(id = newId)
+        is ThreadItem.Reasoning -> item.copy(id = newId)
+        is ThreadItem.ContextCompaction -> item.copy(id = newId)
     }
 
     private fun parseSessionAsThread(session: JSONObject): Thread {
@@ -756,8 +850,9 @@ class KimiCodexRepository(
             updatedAt = updated,
             status = ThreadStatus(if (busy) "busy" else "idle"),
             cwd = session.optJSONObject("metadata")?.optString("cwd").orEmpty(),
-            model = agentConfig?.optString("model"),
-            effort = agentConfig?.optString("thinking"),
+            model = agentConfig?.optString("model")?.takeIf { it.isNotBlank() },
+            // optString 缺省是 ""，不能当 effort 用，否则会盖掉 UI 默认档位。
+            effort = agentConfig?.optString("thinking")?.takeIf { it.isNotBlank() },
         )
     }
 

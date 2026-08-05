@@ -131,7 +131,7 @@ private fun SelectionMenu(
     ) {
         val effortModel = models.firstOrNull { it.id == effortModelId }
         if (effortModel == null) {
-            ModelMenu(models, model, onOpenEffort)
+            ModelMenu(models, model, onOpenEffort, onSelect)
         } else {
             val currentEffort = if (effortModel.id == model) effort else effortModel.defaultReasoningEffort
             EffortMenu(effortModel, currentEffort, onBack) { selectedEffort ->
@@ -146,13 +146,20 @@ private fun ModelMenu(
     models: List<ModelInfo>,
     selectedModelId: String,
     onOpenEffort: (String) -> Unit,
+    onSelect: (String, String) -> Unit,
 ) {
     Column(Modifier.padding(horizontal = 6.dp, vertical = 5.dp)) {
         models.filter { !it.hidden }.forEach { item ->
             ModelMenuRow(
                 model = item,
                 selected = item.id == selectedModelId,
-                onClick = { onOpenEffort(item.id) },
+                onClick = {
+                    if (item.supportedReasoningEfforts.isEmpty()) {
+                        onSelect(item.id, item.defaultReasoningEffort)
+                    } else {
+                        onOpenEffort(item.id)
+                    }
+                },
             )
         }
     }
@@ -176,7 +183,7 @@ private fun ModelMenuRow(model: ModelInfo, selected: Boolean, onClick: () -> Uni
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(17.dp),
             )
-        } else {
+        } else if (model.supportedReasoningEfforts.isNotEmpty()) {
             Icon(
                 Icons.Default.KeyboardArrowRight,
                 contentDescription = "选择推理档位",
@@ -268,5 +275,13 @@ fun ContextUsageRing(usage: TokenUsage?) {
     }
 }
 
-private fun effortLabel(effort: String): String =
-    effort.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+private fun effortLabel(effort: String): String = when (effort.lowercase()) {
+    "off" -> "Off"
+    "on" -> "On"
+    "low" -> "Low"
+    "medium" -> "Medium"
+    "high" -> "High"
+    "xhigh" -> "XHigh"
+    "max" -> "Max"
+    else -> effort.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+}

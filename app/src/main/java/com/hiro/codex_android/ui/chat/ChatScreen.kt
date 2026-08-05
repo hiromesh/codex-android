@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -210,7 +210,10 @@ fun ChatScreen(
                 contentPadding = PaddingValues(start = 12.dp, top = 48.dp, end = 12.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                items(items = items, key = { it.id }) { item ->
+                itemsIndexed(
+                    items = items,
+                    key = { index, item -> "${item.id}#$index" },
+                ) { _, item ->
                     when (item) {
                         is ThreadItem.UserMessage -> UserMessageBubble(item)
                         is ThreadItem.AgentMessage -> AgentMessageItem(
