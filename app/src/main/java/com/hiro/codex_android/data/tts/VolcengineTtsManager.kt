@@ -51,6 +51,8 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
     private var sessionSettings: AppSettings? = null
     private val filter = SpeakTextFilter()
     private var player: PcmStreamPlayer? = null
+    /** 含已 finish 仍在播尾音的实例；stop / 新 session 必须全部 interrupt，不能丢引用。 */
+    private val livePlayers = mutableListOf<PcmStreamPlayer>()
 
     init {
         // 关掉开关立刻停止播报；连接级配置变化后下次合成用新配置重建连接。
@@ -119,8 +121,7 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
             if (activeSession != null && connectionReady) {
                 socket?.send(uplinkFrame(EVENT_CANCEL_SESSION, activeSession, EMPTY_PAYLOAD))
             }
-            player?.interrupt()
-            player = null
+            interruptAllPlayersLocked()
         }
     }
 
@@ -199,8 +200,7 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
     }
 
     private fun teardownLocked() {
-        player?.interrupt()
-        player = null
+        interruptAllPlayersLocked()
         socket?.cancel()
         socket = null
         connectionReady = false
@@ -213,13 +213,32 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
         filter.reset()
     }
 
+    private fun interruptAllPlayersLocked() {
+        for (p in livePlayers) p.interrupt()
+        livePlayers.clear()
+        player = null
+    }
+
+    private fun startPlayerLocked(): PcmStreamPlayer {
+        interruptAllPlayersLocked()
+        return PcmStreamPlayer(SAMPLE_RATE).also {
+            player = it
+            livePlayers.add(it)
+        }
+    }
+
     /** SessionFinished 后复位 session 状态；连接保留，缓冲的文本直接开新 session。 */
     private fun finishSessionLocked() {
         val settings = sessionSettings
         val startNext = pendingText.isNotEmpty() && settings != null
-        // 下一段马上开：打断上一段，避免两路 AudioTrack 叠播；否则播完队列再收尾。
-        if (startNext) player?.interrupt() else player?.finish()
-        player = null
+        if (startNext) {
+            // 下一段立刻开：打断上一段，只播最新。
+            interruptAllPlayersLocked()
+        } else {
+            // 本轮最后一段：允许播完尾音，但保留 livePlayers，便于 stop / 下一段打断。
+            player?.finish()
+            player = null
+        }
         sessionId = null
         sessionStarted = false
         finishRequested = false
@@ -304,9 +323,7 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
 
             EVENT_SESSION_STARTED -> synchronized(lock) {
                 sessionStarted = true
-                // 只保留最新一路播放，防止上一段 finish 后仍在播时叠上新 AudioTrack。
-                player?.interrupt()
-                player = PcmStreamPlayer(SAMPLE_RATE)
+                startPlayerLocked()
                 flushPendingLocked()
                 val activeSession = sessionId
                 if (finishRequested && activeSession != null) {
@@ -314,13 +331,12 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
                 }
             }
 
-            EVENT_TTS_RESPONSE -> player?.write(payload)
+            EVENT_TTS_RESPONSE -> synchronized(lock) { player?.write(payload) }
 
             EVENT_SESSION_FINISHED -> synchronized(lock) { finishSessionLocked() }
 
             EVENT_SESSION_CANCELED, EVENT_SESSION_FAILED -> synchronized(lock) {
-                player?.interrupt()
-                player = null
+                interruptAllPlayersLocked()
                 sessionId = null
                 sessionStarted = false
                 finishRequested = false

@@ -231,6 +231,8 @@ class ChatViewModel(
     fun submit(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        // 一点发送就停掉全部 TTS（含上一段还在播的尾音），与能否真正发出无关。
+        ttsManager.stop()
         when (val action = parseChatAction(trimmed)) {
             null -> send(trimmed)
             else -> dispatchAction(action)

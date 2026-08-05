@@ -42,10 +42,11 @@ class PcmStreamPlayer(private val sampleRate: Int) {
     fun interrupt() {
         interrupted = true
         channel.close()
-        // pause + flush 让阻塞中的 write 立刻返回，播放循环随之退出。
+        // pause/flush/stop 让阻塞中的 write 立刻返回，播放循环随之退出。
         track?.let { t ->
             runCatching { t.pause() }
             runCatching { t.flush() }
+            runCatching { t.stop() }
         }
     }
 
