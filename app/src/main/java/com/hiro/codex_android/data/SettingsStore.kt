@@ -23,6 +23,11 @@ data class AppSettings(
     val ttsSpeaker: String = DEFAULT_TTS_SPEAKER,
     /** 语速，取值 [-50, 100]，0 为原速。 */
     val ttsSpeechRate: Int = 0,
+    /**
+     * 本 App 前台期间屏幕常亮；退出 App 后仍跟系统熄屏时间。
+     * （系统不允许单独改「本 App 的熄屏秒数」，常亮是仅对本 App 生效的可行方案。）
+     */
+    val keepScreenOn: Boolean = false,
 ) {
     companion object {
         /** 文档推荐的双向流式优化接口，实时返回识别结果。 */
@@ -66,6 +71,7 @@ class SettingsStore(context: Context) {
         ttsSpeaker = prefs.getString(KEY_TTS_SPEAKER, AppSettings.DEFAULT_TTS_SPEAKER)
             ?: AppSettings.DEFAULT_TTS_SPEAKER,
         ttsSpeechRate = prefs.getInt(KEY_TTS_SPEECH_RATE, 0),
+        keepScreenOn = prefs.getBoolean(KEY_KEEP_SCREEN_ON, false),
     )
 
     /** 首次升级时把旧的单一 serverUrl/token 迁移为一个 codex profile。 */
@@ -100,6 +106,7 @@ class SettingsStore(context: Context) {
             .putString(KEY_TTS_RESOURCE_ID, settings.ttsResourceId)
             .putString(KEY_TTS_SPEAKER, settings.ttsSpeaker)
             .putInt(KEY_TTS_SPEECH_RATE, settings.ttsSpeechRate)
+            .putBoolean(KEY_KEEP_SCREEN_ON, settings.keepScreenOn)
             .apply()
         _settings.value = settings
     }
@@ -174,5 +181,6 @@ class SettingsStore(context: Context) {
         const val KEY_TTS_RESOURCE_ID = "ttsResourceId"
         const val KEY_TTS_SPEAKER = "ttsSpeaker"
         const val KEY_TTS_SPEECH_RATE = "ttsSpeechRate"
+        const val KEY_KEEP_SCREEN_ON = "keepScreenOn"
     }
 }

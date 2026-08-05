@@ -194,6 +194,7 @@ class KimiCodexRepository(
         ensureConnected()
         val session = restGet("/sessions/$threadId")
         subscribeSession(threadId)
+        ensureYoloPermission(threadId)
         return parseSessionAsThread(session)
     }
 
@@ -204,6 +205,7 @@ class KimiCodexRepository(
         if (!includeTurns) return thread
         val messages = loadAllMessages(threadId)
         subscribeSession(threadId)
+        ensureYoloPermission(threadId)
         // 只补 approvals / in-flight / 游标，不要再用残缺历史整表覆盖当前 UI。
         runCatching { applySnapshot(threadId, reloadMessages = false) }
         val busy = session.optBoolean("busy")
@@ -239,9 +241,12 @@ class KimiCodexRepository(
                 }
             }
         }
+        // 每次发消息都带 yolo：旧会话可能仍是 manual，单靠建会话时 /profile 不够。
         val result = restPost(
             "/sessions/$threadId/prompts",
-            JSONObject().put("content", content),
+            JSONObject()
+                .put("content", content)
+                .put("permission_mode", "yolo"),
         )
         val promptId = result.optString("prompt_id")
         if (promptId.isBlank()) throw IOException("Kimi prompt 响应缺少 prompt_id")
@@ -313,12 +318,21 @@ class KimiCodexRepository(
 
     override suspend fun updateThreadSettings(threadId: String, model: String?, effort: String?) {
         ensureConnected()
-        val agentConfig = JSONObject().also { cfg ->
+        val agentConfig = JSONObject().put("permission_mode", "yolo").also { cfg ->
             model?.takeIf { it.isNotBlank() }?.let { cfg.put("model", it) }
             effort?.takeIf { it.isNotBlank() }?.let { cfg.put("thinking", it) }
         }
-        if (agentConfig.length() == 0) return
         restPost("/sessions/$threadId/profile", JSONObject().put("agent_config", agentConfig))
+    }
+
+    /** 打开已有会话时也拉齐 yolo，避免旧会话仍停在 manual。 */
+    private suspend fun ensureYoloPermission(threadId: String) {
+        runCatching {
+            restPost(
+                "/sessions/$threadId/profile",
+                JSONObject().put("agent_config", JSONObject().put("permission_mode", "yolo")),
+            )
+        }
     }
 
     override suspend fun startCompact(threadId: String) {

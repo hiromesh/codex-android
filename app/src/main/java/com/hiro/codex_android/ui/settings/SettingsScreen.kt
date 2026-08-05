@@ -234,6 +234,30 @@ fun SettingsScreen(onBack: () -> Unit) {
                     valueRange = -50f..100f,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                }
+
+            Text(
+                text = "显示与电源",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "使用期间屏幕常亮",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "仅在本 App 前台生效，退出后仍跟系统熄屏时间",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.keepScreenOn, onCheckedChange = vm::setKeepScreenOn)
             }
 
             Spacer(Modifier.height(4.dp))

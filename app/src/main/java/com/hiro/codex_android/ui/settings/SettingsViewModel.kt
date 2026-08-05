@@ -41,6 +41,7 @@ data class SettingsUiState(
     val ttsResourceId: String = AppSettings.DEFAULT_TTS_RESOURCE_ID,
     val ttsSpeaker: String = AppSettings.DEFAULT_TTS_SPEAKER,
     val ttsSpeechRate: Int = 0,
+    val keepScreenOn: Boolean = false,
 )
 
 class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
@@ -58,6 +59,7 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 ttsResourceId = it.ttsResourceId,
                 ttsSpeaker = it.ttsSpeaker,
                 ttsSpeechRate = it.ttsSpeechRate,
+                keepScreenOn = it.keepScreenOn,
             )
         },
     )
@@ -137,6 +139,7 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
     fun setTtsSpeaker(speaker: String) = _uiState.update { it.copy(ttsSpeaker = speaker) }
     fun setTtsSpeechRate(rate: Int) =
         _uiState.update { it.copy(ttsSpeechRate = rate.coerceIn(-50, 100)) }
+    fun setKeepScreenOn(enabled: Boolean) = _uiState.update { it.copy(keepScreenOn = enabled) }
 
     fun save() {
         val s = _uiState.value
@@ -152,6 +155,7 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 ttsResourceId = s.ttsResourceId.trim().ifBlank { AppSettings.DEFAULT_TTS_RESOURCE_ID },
                 ttsSpeaker = s.ttsSpeaker.trim().ifBlank { AppSettings.DEFAULT_TTS_SPEAKER },
                 ttsSpeechRate = s.ttsSpeechRate,
+                keepScreenOn = s.keepScreenOn,
             ),
         )
     }
