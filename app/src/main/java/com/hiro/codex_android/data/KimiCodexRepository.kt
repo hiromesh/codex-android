@@ -260,9 +260,10 @@ class KimiCodexRepository(
 
     override suspend fun interruptTurn(threadId: String, turnId: String) {
         ensureConnected()
-        val promptId = turnId.ifBlank { activePromptBySession[threadId].orEmpty() }
-        if (promptId.isBlank()) throw IOException("没有可中断的 prompt")
-        restPost("/sessions/$threadId/prompts/$promptId:abort", JSONObject())
+        // 用会话级 abort，不依赖 prompt_id。
+        // UI 的 currentTurnId 经常是对账占位（meta/history）或 turn-N，不能当 prompts/{pid}:abort 的 pid。
+        restPost("/sessions/$threadId:abort", JSONObject())
+        activePromptBySession.remove(threadId)
     }
 
     override suspend fun respondApproval(requestId: Int, decision: ApprovalDecision) {
@@ -765,23 +766,29 @@ class KimiCodexRepository(
         }
         if (!reloadMessages) {
             // 只同步会话元数据，items 留空表示「不要覆盖本地气泡」。
+            val promptId = activePromptBySession[sessionId]
+                ?: inFlight?.optString("current_prompt_id")?.takeIf { it.isNotBlank() }
+                ?: "meta"
             _events.emit(
                 CodexEvent.ThreadReconciled(
                     parseSessionAsThread(sessionObj ?: restGet("/sessions/$sessionId")).copy(
                         turns = listOf(
-                            Turn(id = "meta", status = if (busy) "inProgress" else "completed", items = emptyList()),
+                            Turn(id = promptId, status = if (busy) "inProgress" else "completed", items = emptyList()),
                         ),
                     ),
                 ),
             )
             return
         }
+        val historyPromptId = activePromptBySession[sessionId]
+            ?: inFlight?.optString("current_prompt_id")?.takeIf { it.isNotBlank() }
+            ?: "history"
         _events.emit(
             CodexEvent.ThreadReconciled(
                 parseSessionAsThread(sessionObj ?: restGet("/sessions/$sessionId")).copy(
                     turns = listOf(
                         Turn(
-                            id = "history",
+                            id = historyPromptId,
                             status = if (busy) "inProgress" else "completed",
                             items = loadAllMessages(sessionId),
                         ),

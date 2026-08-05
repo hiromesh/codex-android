@@ -367,10 +367,11 @@ class ChatViewModel(
     fun interrupt() {
         val state = _uiState.value
         val threadId = state.threadId ?: return
-        val turnId = state.currentTurnId ?: return
+        // generating 即可停；不强制 currentTurnId（Kimi 对账时可能是 meta 占位）。
+        if (!state.generating && state.currentTurnId == null) return
         ttsManager.stop()
         viewModelScope.launch {
-            runCatching { repo.interruptTurn(threadId, turnId) }
+            runCatching { repo.interruptTurn(threadId, state.currentTurnId.orEmpty()) }
                 .onFailure { e -> _uiState.update { it.copy(error = "中断失败：${e.message}") } }
         }
     }
