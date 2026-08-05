@@ -215,16 +215,18 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
 
     /** SessionFinished 后复位 session 状态；连接保留，缓冲的文本直接开新 session。 */
     private fun finishSessionLocked() {
-        player?.finish()
+        val settings = sessionSettings
+        val startNext = pendingText.isNotEmpty() && settings != null
+        // 下一段马上开：打断上一段，避免两路 AudioTrack 叠播；否则播完队列再收尾。
+        if (startNext) player?.interrupt() else player?.finish()
         player = null
         sessionId = null
         sessionStarted = false
         finishRequested = false
-        val settings = sessionSettings
         val finishNext = queuedFinish
         queuedFinish = false
-        if (pendingText.isNotEmpty() && settings != null) {
-            beginSessionLocked(settings)
+        if (startNext) {
+            beginSessionLocked(settings!!)
             // 文本已经到齐，等 SessionStarted 后 flush 并立即 FinishSession。
             if (finishNext) finishRequested = true
         }
@@ -302,6 +304,8 @@ class VolcengineTtsManager(private val settingsStore: SettingsStore) {
 
             EVENT_SESSION_STARTED -> synchronized(lock) {
                 sessionStarted = true
+                // 只保留最新一路播放，防止上一段 finish 后仍在播时叠上新 AudioTrack。
+                player?.interrupt()
                 player = PcmStreamPlayer(SAMPLE_RATE)
                 flushPendingLocked()
                 val activeSession = sessionId
