@@ -82,10 +82,24 @@ class ChatViewModel(
         if (initialThreadId != null) loadThread(initialThreadId)
         // §8.2：订阅全局事件流，按 threadId 过滤
         viewModelScope.launch { repo.events.collect(::handleEvent) }
-        // §3.8：模型选择器数据
+        // §3.8：模型选择器数据；当前模型不在列表里时改用服务端默认（避免新会话显示 Codex 占位名）。
         viewModelScope.launch {
             runCatching { repo.listModels() }
-                .onSuccess { models -> _uiState.update { it.copy(availableModels = models) } }
+                .onSuccess { models ->
+                    _uiState.update { state ->
+                        val preferred = models.firstOrNull { it.isDefault } ?: models.firstOrNull()
+                        val modelValid = models.any { it.id == state.model }
+                        state.copy(
+                            availableModels = models,
+                            model = if (modelValid) state.model else preferred?.id ?: state.model,
+                            effort = if (modelValid) {
+                                state.effort
+                            } else {
+                                preferred?.defaultReasoningEffort ?: state.effort
+                            },
+                        )
+                    }
+                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

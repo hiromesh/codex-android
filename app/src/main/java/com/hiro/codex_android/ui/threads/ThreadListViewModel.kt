@@ -107,7 +107,7 @@ class ThreadListViewModel(
             val entries = mutableListOf<ThreadEntry>()
             val errors = mutableMapOf<String, String>()
             profiles.forEach { profile ->
-                runCatching { registry.repositoryFor(profile.id).listThreads(limit = 15) }
+                runCatching { registry.repositoryFor(profile.id).listThreads(limit = 20) }
                     .onSuccess { page ->
                         page.data.forEach { thread ->
                             val effective = if (key(profile.id, thread.id) in locallyWorkingKeys) {

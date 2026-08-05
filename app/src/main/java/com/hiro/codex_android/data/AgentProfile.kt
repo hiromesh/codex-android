@@ -3,8 +3,7 @@ package com.hiro.codex_android.data
 import java.util.UUID
 
 /**
- * Agent 类型。目前只有 CODEX 有完整实现（JSON-RPC over WebSocket）；
- * 其余类型先在设置中可见、标注"暂未支持"，后续各自实现 [CodexRepository]。
+ * Agent 类型。CODEX / KIMI 已有完整实现；其余类型先在设置中可见、标注"暂未支持"。
  */
 enum class AgentType(
     val wireValue: String,
@@ -17,7 +16,7 @@ enum class AgentType(
     val supported: Boolean,
 ) {
     CODEX("codex", "Codex", "C", 0xFF10A37F, true),
-    KIMI("kimi", "Kimi Code", "K", 0xFF3E63DD, false),
+    KIMI("kimi", "Kimi Code", "K", 0xFF3E63DD, true),
     CLAUDE("claude", "Claude Code", "A", 0xFFD97757, false),
     OPENCODE("opencode", "OpenCode", "O", 0xFF8B5CF6, false),
     ;
@@ -26,9 +25,10 @@ enum class AgentType(
         fun fromWireValue(value: String): AgentType =
             entries.firstOrNull { it.wireValue == value } ?: CODEX
 
-        /** §0 生产地址（8443 规避未备案域名 80/443 拦截）；其余类型暂无默认。 */
+        /** §0 生产地址（8443 规避未备案域名 80/443 拦截）。 */
         fun defaultUrl(type: AgentType): String = when (type) {
             CODEX -> "wss://codex.waibozishu.com:8443"
+            KIMI -> "https://kimi.waibozishu.com:8443"
             else -> ""
         }
     }
@@ -45,10 +45,15 @@ data class AgentProfile(
     val type: AgentType = AgentType.CODEX,
     val serverUrl: String = "",
     val token: String = "",
+    /**
+     * Kimi 建会话时的服务器工作目录（绝对路径）。
+     * 留空则使用服务端已注册的最近 workspace；两者都没有时无法建会话。
+     */
+    val defaultCwd: String = "",
     val enabled: Boolean = true,
 ) {
     val displayName: String get() = name.ifBlank { type.displayName }
 
     /** 连接三元组：任一变化都需要重建 repository。 */
-    fun connectionKey(): String = "${type.wireValue}|$serverUrl|$token"
+    fun connectionKey(): String = "${type.wireValue}|$serverUrl|$token|$defaultCwd"
 }

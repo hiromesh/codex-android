@@ -65,8 +65,9 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-> `kimi` 的实际路径用 `which kimi` 确认后再写。如果 install.sh 装到了别的位置（如 `~/.kimi-code/bin`），改成对应绝对路径。
+> `kimi` 的实际路径用 `which kimi` 确认后再写。实测（2026-08）：install.sh 装在 `~/.kimi-code/bin/kimi`。
 > 也可以用环境变量代替 flag：`Environment=KIMI_CODE_ALLOWED_HOSTS=kimi.waibozishu.com`。
+> **ExecStart 必须写成一行**：`--allowed-host` 换行或重复会导致 systemd 解析失败（daemon-reload 报错或服务异常）。改完用 `sudo systemctl daemon-reload && sudo systemctl restart kimi-web` 确认无报错。
 
 ```bash
 sudo systemctl daemon-reload
@@ -92,6 +93,8 @@ sudo systemctl reload caddy
 
 > 用非标准端口 8443 是因为腾讯云未备案域名会拦截 80/443（此前 codex 部署已踩过）。
 > 云安全组确认 8443 已放行（codex 部署时应该已经开过，无需重复操作）。
+> 实测：Caddy 会为 kimi 域名自动签发 Let's Encrypt 证书（CN=kimi.waibozishu.com），无需手动配置证书。
+> 与 codex 共用 8443 不会冲突：Caddy 按 SNI（TLS 握手域名）区分路由到不同后端。
 
 ## 5. 端到端验证
 
@@ -105,6 +108,9 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:58627/api/v1/sessions
 # 公网（本地电脑执行）
 curl -s https://kimi.waibozishu.com:8443/api/v1/healthz
 curl -s -H "Authorization: Bearer $TOKEN" https://kimi.waibozishu.com:8443/api/v1/sessions
+
+# 客户端本地 DNS 异常时的链路诊断：--resolve 绕过本地解析，直接打到服务器 IP
+curl -v --resolve kimi.waibozishu.com:8443:<服务器IP> https://kimi.waibozishu.com:8443/api/v1/healthz
 
 # 协议文档（给 App 开发者用，真理之源）
 curl -s -H "Authorization: Bearer $TOKEN" https://kimi.waibozishu.com:8443/openapi.json   # REST
@@ -135,11 +141,14 @@ WS 断线重连：`subscribe` 可带 `{seq, epoch}` 游标**重放漏掉的事�
 ## 7. 已知坑（部署时核对）
 
 1. **Host 检查 403**：`--allowed-host <域名>` 没加，或域名写错。错误信息会提示正确的 flag 用法。
+   快速定位：服务器上 `curl -s -H "Host: kimi.waibozishu.com" http://127.0.0.1:58627/api/v1/healthz`——返回 403（`code:40301`）即未放行，响应体会直接给出修复命令。
 2. **401**：token 错了，或拿了旧 token（重装了 `~/.kimi-code`）。重新 `cat server.token`。
 3. **它是前台进程**：必须用 systemd 包，别指望 `--daemon`（不存在；旧的 `kimi server` 已废弃）。
 4. **WorkingDirectory 别忘**：不设的话 cwd 是 `/`（codex 部署时踩过）。
 5. 非 loopback 直连暴露（不走 Caddy）需要额外的 `--insecure-no-tls` 等 flag——本指南全程 loopback + Caddy TLS，不涉及。
 6. `POST /api/v1/shutdown` 和 PTY 终端路由在非 loopback 默认禁用（`--allow-remote-shutdown` / `--allow-remote-terminals`），**不要开**。
+7. **客户端本地 DNS 缓存**（实测踩过）：`nslookup` 能解析但 `curl` 报 `Could not resolve host`——是 macOS 系统解析缓存（mDNSResponder）的问题，`nslookup` 走的是另一条路径。清缓存：`sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`；不想清缓存就用 `curl --resolve` 绕过。
+8. **curl 静默失败**：`curl -s` 出错时也要看 stderr（`curl -v` 看全链路：DNS → TCP → TLS → HTTP 状态码），空输出不代表请求成功。
 
 ## 8. 重启/维护
 

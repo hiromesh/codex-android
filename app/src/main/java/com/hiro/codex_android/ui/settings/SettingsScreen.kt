@@ -314,7 +314,12 @@ private fun ProfileEditDialog(
                 OutlinedTextField(
                     value = draft.serverUrl,
                     onValueChange = { url -> onChange { it.copy(serverUrl = url) } },
-                    label = { Text("服务器地址 (WebSocket)") },
+                    label = {
+                        Text(
+                            if (draft.type == AgentType.KIMI) "服务器地址 (HTTPS)"
+                            else "服务器地址 (WebSocket)",
+                        )
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -326,6 +331,16 @@ private fun ProfileEditDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (draft.type == AgentType.KIMI) {
+                    OutlinedTextField(
+                        value = draft.defaultCwd,
+                        onValueChange = { cwd -> onChange { it.copy(defaultCwd = cwd) } },
+                        label = { Text("默认工作目录（服务器绝对路径）") },
+                        placeholder = { Text("/home/ubuntu/proj") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }

@@ -22,6 +22,7 @@ data class ProfileDraft(
     val name: String = "",
     val serverUrl: String = AgentType.defaultUrl(AgentType.CODEX),
     val token: String = "",
+    val defaultCwd: String = "",
     val enabled: Boolean = true,
 )
 
@@ -80,6 +81,7 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 name = profile.name,
                 serverUrl = profile.serverUrl,
                 token = profile.token,
+                defaultCwd = profile.defaultCwd,
                 enabled = profile.enabled,
             ),
             draftError = null,
@@ -106,6 +108,7 @@ class SettingsViewModel(private val store: SettingsStore) : ViewModel() {
                 type = draft.type,
                 serverUrl = url,
                 token = draft.token.trim(),
+                defaultCwd = draft.defaultCwd.trim(),
                 enabled = draft.enabled,
             ),
         )

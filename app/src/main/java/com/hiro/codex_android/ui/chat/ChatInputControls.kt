@@ -51,7 +51,10 @@ fun ModelSelector(
     var open by remember { mutableStateOf(false) }
     var effortModelId by remember { mutableStateOf<String?>(null) }
     val selectedModel = models.firstOrNull { it.id == model }
-    val label = selectedModel?.displayName ?: "GPT-5.6-Terra"
+    val label = selectedModel?.displayName
+        ?: models.firstOrNull { it.isDefault }?.displayName
+        ?: models.firstOrNull()?.displayName
+        ?: model.ifBlank { "选择模型" }
 
     Box(modifier) {
         ModelSelectorTrigger(label, effort, onClick = { open = true })

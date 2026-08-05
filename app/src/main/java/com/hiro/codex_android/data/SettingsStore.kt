@@ -133,6 +133,7 @@ class SettingsStore(context: Context) {
                         type = AgentType.fromWireValue(obj.optString("type")),
                         serverUrl = obj.optString("serverUrl"),
                         token = obj.optString("token"),
+                        defaultCwd = obj.optString("defaultCwd"),
                         enabled = obj.optBoolean("enabled", true),
                     ),
                 )
@@ -152,6 +153,7 @@ class SettingsStore(context: Context) {
                     .put("type", profile.type.wireValue)
                     .put("serverUrl", profile.serverUrl)
                     .put("token", profile.token)
+                    .put("defaultCwd", profile.defaultCwd)
                     .put("enabled", profile.enabled),
             )
         }
