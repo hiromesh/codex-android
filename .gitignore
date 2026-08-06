@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+claude-server/node_modules/
+claude-server/.venv/

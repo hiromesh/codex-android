@@ -4,6 +4,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { Sidebar } from "./screens/Sidebar";
 import { ThreadListStore } from "./stores";
 import { NewThreadMenu } from "./components/NewThreadMenu";
+import { initServerProfileSync } from "./settings";
 
 type Route =
   | { view: "threads" }
@@ -59,6 +60,8 @@ export function App() {
 
   useEffect(() => {
     threadListStore.init();
+    // 与服务端配置对账（API/CLI 的配置源）
+    initServerProfileSync();
     return () => threadListStore.dispose();
   }, [threadListStore]);
 

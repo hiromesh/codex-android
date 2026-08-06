@@ -97,11 +97,11 @@ fun ThreadListScreen(
     var profilePickerOpen by remember { mutableStateOf(false) }
     var noProfileHint by remember { mutableStateOf(false) }
 
-    // 首页可见时保持轻量轮询，让其他正在工作的任务也能及时显示状态。
+    // 首页可见时保持轻量轮询（30s），让其他正在工作的任务也能及时显示状态。
     LaunchedEffect(Unit) {
         while (isActive) {
             vm.refresh()
-            delay(8_000)
+            delay(30_000)
         }
     }
 

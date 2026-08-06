@@ -65,3 +65,35 @@ src/
 ├── stores.ts    # ThreadListStore / ChatStore（多 profile 聚合、动作派发），对应两个 ViewModel
 └── components/  # 消息卡片、Markdown、输入栏、审批/动作弹窗等
 ```
+
+## API 与 CLI
+
+web 服务把完整能力暴露为 REST 业务 API（`/api/*`，与 `/api/relay` 转发区分），并附带一个命令行客户端：
+
+```bash
+# API（默认 http://localhost:3000；设置 API_TOKEN 环境变量后需 Authorization: Bearer <token>）
+curl http://localhost:3000/api/sessions                          # 跨所有 Agent 的会话列表
+curl http://localhost:3000/api/sessions/<threadId>               # 会话详情（含 turns）
+curl -X POST http://localhost:3000/api/sessions -H 'Content-Type: application/json' \
+  -d '{"profile":"本机Claude","model":"...","effort":"high"}'    # 新建会话
+curl -X POST http://localhost:3000/api/sessions/<threadId>/messages \
+  -H 'Content-Type: application/json' -d '{"text":"你好"}'       # 发消息/斜杠命令
+curl http://localhost:3000/api/turns/<threadId>                  # 轮次状态（轮询用）
+curl http://localhost:3000/api/approvals/pending                 # 待审批
+curl -X POST http://localhost:3000/api/approvals/<id> -d '{"decision":"accept"}'
+curl -X PUT http://localhost:3000/api/profiles -d '{"profiles":[...]}'   # 配置同步
+
+# CLI（Node ≥24 直接执行；npm link 或 npm i -g 后全局可用，命令名 `nex` 避免与本地 codex CLI 冲突）
+nex ls                     # 会话列表
+nex new --profile 本机Claude
+nex open <threadId>         # 查看历史
+nex send <threadId> "你好"  # 发消息，轮询到完成并流式打印
+nex cmd <threadId> /compact   # 斜杠命令（codex 动作 / claude 透传都支持）
+nex stop <threadId> / nex rm <threadId>
+nex approvals / nex approve <id> <decision>
+nex profiles [ls|add|rm]    # 配置管理（与服务端文件同步）
+```
+
+- 配置以服务端文件 `~/.codex-web/profiles.json` 为权威：web 前端设置变更会同步过去，CLI 通过 `codex profiles` 管理；两端自动合并不互相覆盖。
+- `CODEX_WEB_URL`（默认 http://localhost:3000）与 `CODEX_WEB_TOKEN` 可覆盖 CLI 的服务地址与鉴权。
+- 协议层（`src/protocol/`）与 UI 完全解耦，浏览器与服务端共用同一套实现。

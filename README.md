@@ -1,23 +1,34 @@
 # Codex Android
 
-An Android client for remotely connecting to `codex app-server`. It uses WebSockets to send prompts, receive streaming Codex responses, and display command execution, file changes, reasoning summaries, and approval requests.
+An Android client for remotely connecting to code agents (`codex app-server`, `kimi web`, or the Claude Code wrapper `claude-server/`). It uses WebSockets to send prompts, receive streaming responses, and display command execution, file changes, reasoning summaries, and approval requests.
 
 ## Features
 
-- Latest 15 server-side sessions and conversation history restoration
+- Latest server-side sessions and conversation history restoration
 - Streaming Markdown responses
 - Create sessions, resume existing sessions, and stop generation
-- Model and reasoning-effort selection
+- Model and reasoning-effort selection (Codex / Kimi)
 - Command and file-change approval requests
 - Command output, file-change, and reasoning-summary presentation
 - WebSocket reconnection and full session reconciliation, including automatic sync when returning from lock screen or background
+- Multiple agent servers (Codex / Kimi Code / Claude Code) aggregated in one session list, with per-agent badges
 
 ## Requirements
 
 - Android Studio (the included Gradle Wrapper is recommended)
 - Android SDK 36
 - JDK 11, or the JBR bundled with Android Studio
-- A deployed and reachable `codex app-server`
+- A deployed and reachable agent server: `codex app-server`, `kimi web`, or `claude-server/` (see below)
+
+## Agent servers
+
+| Type | Server | Protocol |
+| --- | --- | --- |
+| Codex | `codex app-server` | JSON-RPC over WebSocket |
+| Kimi Code | `kimi web` (`kap-server`) | REST + WebSocket |
+| Claude Code | `claude-server/` (wrapper around the official `@anthropic-ai/claude-agent-sdk`) | REST + WebSocket (direct-connect shape) |
+
+`claude-server/` is a small Node service that wraps your local Claude Code CLI: run `node claude_server.js`, then point the app at it. See [claude-server/README.md](claude-server/README.md) and [docs/CLAUDE_DEPLOY.md](docs/CLAUDE_DEPLOY.md) for details.
 
 ## Server configuration
 
@@ -25,10 +36,11 @@ Open **Settings** in the app and manage one or more **Agent 服务器** profiles
 
 | Field | Description |
 | --- | --- |
-| Type | Agent kind. Currently only **Codex** (`codex app-server`) is supported; Kimi Code / Claude Code / OpenCode are listed as upcoming |
+| Type | Agent kind: **Codex**, **Kimi Code**, or **Claude Code** |
 | Name | Optional display name; defaults to the type name |
-| Server URL | WebSocket endpoint, for example `wss://example.com:8443` |
-| Token | Server WebSocket Bearer token |
+| Server URL | Server endpoint, for example `wss://example.com:8443` (Codex), `https://example.com:8443` (Kimi / Claude) |
+| Token | Server Bearer token |
+| Default working directory | Kimi / Claude only: the server-side `cwd` used when creating sessions |
 
 Profiles can be individually enabled/disabled. The session list aggregates threads from all enabled profiles, with a badge showing which agent each session belongs to. Tokens are stored locally on the device and must never be committed to the repository.
 
@@ -78,7 +90,7 @@ app/src/main/java/com/hiro/codex_android/
 
 ## Web 版本
 
-[web/](web/) 是同一 app-server 的桌面网页客户端（前后端一体 TypeScript 单仓库）：
+[web/](web/) 是同一批 Agent 服务器的桌面网页客户端（前后端一体 TypeScript 单仓库）：
 
 ```bash
 cd web
@@ -87,4 +99,4 @@ npm run dev      # 开发：http://localhost:5175
 npm run build && npm start   # 生产：单端口 http://localhost:3000
 ```
 
-功能与安卓端完全等价（会话列表、流式 Markdown、审批、模型/档位切换、token 占用、语音输入、断线对账），桌面布局为左侧会话栏 + 主聊天区。由于浏览器 WebSocket 不能自定义请求头，服务端同时代理 `/ws/codex`（注入 Bearer token）与 `/ws/asr`（注入火山 ASR 鉴权头）。详见 [web/README.md](web/README.md)。
+功能与安卓端等价（多 Agent 会话列表与徽章、流式 Markdown、审批、模型/档位切换、token 占用、语音输入、TTS 播报、斜杠命令、断线对账），桌面布局为左侧会话栏 + 主聊天区。由于浏览器 WebSocket 不能自定义请求头、跨域 fetch 不能带 Authorization，服务端统一代理 `/ws/codex`、`/ws/kimi`、`/ws/claude`、`/ws/asr`、`/ws/tts` 与 `/api/relay/*`（REST 转发）。详见 [web/README.md](web/README.md)。

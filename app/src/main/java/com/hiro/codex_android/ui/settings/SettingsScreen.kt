@@ -340,7 +340,7 @@ private fun ProfileEditDialog(
                     onValueChange = { url -> onChange { it.copy(serverUrl = url) } },
                     label = {
                         Text(
-                            if (draft.type == AgentType.KIMI) "服务器地址 (HTTPS)"
+                            if (draft.type == AgentType.KIMI || draft.type == AgentType.CLAUDE) "服务器地址 (HTTPS)"
                             else "服务器地址 (WebSocket)",
                         )
                     },
@@ -355,7 +355,7 @@ private fun ProfileEditDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (draft.type == AgentType.KIMI) {
+                if (draft.type == AgentType.KIMI || draft.type == AgentType.CLAUDE) {
                     OutlinedTextField(
                         value = draft.defaultCwd,
                         onValueChange = { cwd -> onChange { it.copy(defaultCwd = cwd) } },

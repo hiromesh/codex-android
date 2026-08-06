@@ -1,4 +1,4 @@
-import { registry } from "./protocol/registry";
+import { registry } from "./settings";
 import { startAsr, AsrSession } from "./asr";
 import { settingsStore } from "./settings";
 import { ttsManager } from "./tts";
@@ -219,8 +219,9 @@ export interface ChatUiState {
   error: string | null;
 }
 
+/** 默认推理档位：与 kimi 服务器模型档位 [low, high, max] 的默认（max）一致；resolveEffort 仍会夹到合法档位。 */
 const DEFAULT_MODEL = "gpt-5.6-terra";
-const DEFAULT_EFFORT = "medium";
+const DEFAULT_EFFORT = "max";
 const TURN_RECONCILE_INTERVAL_MS = 15_000;
 
 export class ChatStore {
@@ -261,8 +262,8 @@ export class ChatStore {
     // §8.2：订阅全局事件流，按 threadId 过滤
     this.unsubEvents = repo.events.subscribe((event) => this.handleEvent(event));
     // §3.8：模型选择器数据；当前模型不在列表里时改用服务端默认（避免新会话显示 Codex 占位名）。
-    // 已有会话的 effort 以会话为准（loadThread 已读取），listModels 只喂菜单数据，
-    // 不再用默认模型的档位列表去夹会话 effort，避免「打开会话 effort 变了」。
+    // effort 总是用 resolveEffort 对齐模型支持的档位（与安卓一致）：
+    // 默认 medium 不在 kimi 的 [low,high,max] 里时，会夹成模型默认档位而不是显示无效值。
     void repo
       .listModels()
       .then((models) => this.setState((state) => {
@@ -273,7 +274,7 @@ export class ChatStore {
           ...state,
           availableModels: models,
           model: modelId,
-          effort: state.threadId == null ? resolveEffort(modelInfo, state.effort) : state.effort,
+          effort: resolveEffort(modelInfo, state.effort),
         };
       }))
       .catch((error) => this.setState({ ...this.state, error: error instanceof Error ? error.message : String(error) }));
@@ -331,7 +332,7 @@ export class ChatStore {
             loading: false,
             title: thread.name ?? (thread.preview || "会话"),
             model: modelId,
-            effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
+            effort: resolveEffort(modelInfo, thread.effort ?? loadEffortMemory(threadId) ?? state.effort),
             items: thread.turns.flatMap((turn) => turn.items),
           };
         });
@@ -564,6 +565,7 @@ export class ChatStore {
             // 不能让它阻断发消息；其余（codex/kimi）写失败仍按真实错误上抛。
             if (!(settingsError instanceof Error) || !settingsError.message.includes("暂不支持")) throw settingsError;
           }
+          if (selection.effort) saveEffortMemory(thread.id, selection.effort);
           this.setState({
             ...this.state,
             threadId: thread.id,
@@ -712,6 +714,7 @@ export class ChatStore {
     const threadId = this.state.threadId;
     this.setState({ ...this.state, model: modelId, effort });
     if (threadId) {
+      saveEffortMemory(threadId, effort);
       void registry
         .repositoryFor(this.state.profileId)
         .updateThreadSettings(threadId, modelId, effort)
@@ -838,7 +841,7 @@ export class ChatStore {
           ...state,
           title: thread.name ?? (thread.preview || state.title),
           model: modelId,
-          effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
+          effort: resolveEffort(modelInfo, thread.effort ?? loadEffortMemory(thread.id) ?? state.effort),
           generating: true,
           currentTurnId: activeTurn.id,
         };
@@ -847,7 +850,7 @@ export class ChatStore {
         ...state,
         title: thread.name ?? (thread.preview || state.title),
         model: modelId,
-        effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
+        effort: resolveEffort(modelInfo, thread.effort ?? loadEffortMemory(thread.id) ?? state.effort),
         items: replaceItems ? incomingItems : state.items,
         generating: false,
         currentTurnId: null,
@@ -868,6 +871,29 @@ export class ChatStore {
 
 function localId(): string {
   return `local-${crypto.randomUUID()}`;
+}
+
+/** 会话级 effort 本地记忆：kimi 服务器 /profile 不持久化 thinking 时的兜底，重开会话保持用户选择。 */
+const EFFORT_MEMORY_KEY = "threadEfforts";
+function loadEffortMemory(threadId: string): string | undefined {
+  try {
+    const raw = localStorage.getItem(EFFORT_MEMORY_KEY);
+    if (!raw) return undefined;
+    const v = (JSON.parse(raw) as Record<string, string>)[threadId];
+    return typeof v === "string" && v ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveEffortMemory(threadId: string, effort: string) {
+  try {
+    const raw = localStorage.getItem(EFFORT_MEMORY_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    map[threadId] = effort;
+    localStorage.setItem(EFFORT_MEMORY_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
 }
 
 /**

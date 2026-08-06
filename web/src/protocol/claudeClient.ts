@@ -48,6 +48,9 @@ export class ClaudeClient implements Repository {
   private readonly httpBase: string;
   /** profile.serverUrl 的 WS scheme（ws / wss），用于把服务端返回的 ws_url 对齐。 */
   private readonly wsScheme: "ws" | "wss";
+  /** 服务端（Node）运行时需要绝对地址；浏览器留空走同源相对路径。 */
+  private readonly apiBase: string;
+  private readonly wsBase: string;
   /** serverSessionId → 打开的会话（各自独立 WS 连接）。 */
   private sessions = new Map<string, ClaudeSession>();
   /** 本地审批 key → (serverSessionId, 服务端 request_id)。 */
@@ -56,10 +59,15 @@ export class ClaudeClient implements Repository {
   /** 直播 delta 的系统标签剥离（标签可能跨 delta 切分，需状态机）。 */
   private readonly tagStripper = new SystemTagStripper();
 
-  constructor(private readonly profile: AgentProfile) {
+  constructor(
+    private readonly profile: AgentProfile,
+    options: { apiBase?: string } = {},
+  ) {
     const { httpBase, wsScheme } = deriveBases(profile.serverUrl);
     this.httpBase = httpBase;
     this.wsScheme = wsScheme;
+    this.apiBase = options.apiBase ?? "";
+    this.wsBase = options.apiBase ? options.apiBase.replace(/^http/, "ws") : "";
   }
 
   close() {
@@ -71,7 +79,7 @@ export class ClaudeClient implements Repository {
   async initialize(): Promise<void> {
     // healthz 无需鉴权，但跨域 fetch 读不到响应，统一走同源 relay。
     const { url, token } = requireValidProfile(this.profile);
-    const target = `/api/relay/claude/healthz?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
+    const target = `${this.apiBase}/api/relay/claude/healthz?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
     const response = await fetch(target);
     if (!response.ok) {
       throw new Error("Claude 服务器连接失败，请检查地址与 Token（healthz）");
@@ -262,7 +270,7 @@ export class ClaudeClient implements Repository {
   private async rest(method: string, path: string, body?: Json): Promise<Json> {
     const { url, token } = requireValidProfile(this.profile);
     const sep = path.includes("?") ? "&" : "?";
-    const target = `/api/relay/claude${path}${sep}url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
+    const target = `${this.apiBase}/api/relay/claude${path}${sep}url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
     const response = await fetch(target, {
       method,
       headers: body !== undefined ? { "Content-Type": "application/json; charset=utf-8" } : undefined,
@@ -293,8 +301,8 @@ export class ClaudeClient implements Repository {
       const { token } = requireValidProfile(this.profile);
       const params = new URLSearchParams({ url: session.wsUrl, token });
       await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(`/ws/claude?${params.toString()}`);
-        const timeout = window.setTimeout(() => {
+        const socket = new WebSocket(`${this.wsBase}/ws/claude?${params.toString()}`);
+        const timeout = setTimeout(() => {
           socket.close();
           reject(new Error("连接 Claude 超时"));
         }, CONNECT_TIMEOUT_MS);

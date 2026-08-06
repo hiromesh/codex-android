@@ -1,10 +1,16 @@
 import { AgentProfile, profileConnectionKey } from "../types";
-import { settingsStore } from "../settings";
 import { CodexClient } from "./codexClient";
 import { ClaudeClient } from "./claudeClient";
 import { KimiClient } from "./kimiClient";
 import { ProfiledEvent } from "./events";
 import { Repository } from "./repository";
+
+/** 配置源抽象：浏览器端由 settingsStore（localStorage）实现，服务端由文件存储实现。 */
+export interface ProfileProvider {
+  getProfiles(): AgentProfile[];
+  /** 配置变化时回调（浏览器侧用于即时重建连接）；服务端在 PUT /api/profiles 后手动调用 reconcile。 */
+  subscribeProfiles?(fn: () => void): () => void;
+}
 
 /**
  * 按 AgentProfile 管理 repository 的创建与销毁（对应 Android RepositoryRegistry）。
@@ -13,17 +19,20 @@ import { Repository } from "./repository";
  * 变化时，旧实例 close 后丢弃，下次使用时按新配置重建。事件流合并为
  * [allEvents]，每个事件都带来源 profileId。
  *
- * 与 UI 解耦：后续把协议层暴露为 HTTP API（list 所有 session / 取某个 session）时，
- * 直接复用本模块的 repositoryFor / listAllThreads 即可。
+ * 与 UI 无关：浏览器 UI 与服务端 API（REST 暴露）共用同一实现。
  */
-class RepositoryRegistry {
+export class RepositoryRegistry {
   private repositories = new Map<string, Repository>();
   private connectionKeys = new Map<string, string>();
   private listeners = new Set<(event: ProfiledEvent) => void>();
 
-  constructor() {
-    // 停用/删除/改连接的 profile，其 repository 立即释放（单例，应用生命周期内不取消）。
-    settingsStore.subscribeProfiles(() => this.reconcile());
+  constructor(
+    private readonly provider: ProfileProvider,
+    private readonly options: { apiBase?: string } = {},
+  ) {
+    if (provider.subscribeProfiles) {
+      provider.subscribeProfiles(() => this.reconcile());
+    }
   }
 
   /** 订阅聚合事件流（带来源 profileId）。 */
@@ -37,7 +46,7 @@ class RepositoryRegistry {
    * @throws 配置不存在/已停用，或该 Agent 类型暂未支持。
    */
   repositoryFor(profileId: string): Repository {
-    const profile = settingsStore.getProfiles().find((p) => p.id === profileId && p.enabled);
+    const profile = this.provider.getProfiles().find((p) => p.id === profileId && p.enabled);
     if (!profile) throw new Error("配置不存在或已停用");
     const existing = this.repositories.get(profileId);
     if (existing) return existing;
@@ -52,7 +61,7 @@ class RepositoryRegistry {
 
   /** 聚合所有启用配置的会话列表，按更新时间倒序混排；失败项单独收进 errors。 */
   async listAllThreads(): Promise<{ entries: { profile: AgentProfile; thread: import("../types").Thread }[]; errors: Map<string, string> }> {
-    const profiles = settingsStore.getProfiles().filter((p) => p.enabled);
+    const profiles = this.provider.getProfiles().filter((p) => p.enabled);
     const entries: { profile: AgentProfile; thread: import("../types").Thread }[] = [];
     const errors = new Map<string, string>();
     await Promise.all(
@@ -69,10 +78,10 @@ class RepositoryRegistry {
     return { entries, errors };
   }
 
-  /** 停用/删除/改连接的 profile，其 repository 立即释放。 */
-  private reconcile() {
+  /** 配置变更后重建连接（服务端 PUT /api/profiles 后调用；浏览器由 subscribeProfiles 自动触发）。 */
+  reconcile() {
     const active = new Map(
-      settingsStore
+      this.provider
         .getProfiles()
         .filter((p) => p.enabled)
         .map((p) => [p.id, p] as const),
@@ -96,15 +105,13 @@ class RepositoryRegistry {
   private createRepository(profile: AgentProfile): Repository {
     switch (profile.type) {
       case "codex":
-        return new CodexClient(profile);
+        return new CodexClient(profile, this.options);
       case "kimi":
-        return new KimiClient(profile);
+        return new KimiClient(profile, this.options);
       case "claude":
-        return new ClaudeClient(profile);
+        return new ClaudeClient(profile, this.options);
       default:
         throw new Error(`${profile.type} 暂未支持`);
     }
   }
 }
-
-export const registry = new RepositoryRegistry();

@@ -1,4 +1,5 @@
 import { AgentProfile, AppSettings, DEFAULT_SETTINGS, AGENT_TYPES, profileConnectionKey } from "./types";
+import { RepositoryRegistry } from "./protocol/registry";
 
 const SETTINGS_KEYS: Record<Exclude<keyof AppSettings, "ttsSpeechRate">, string> = {
   asrUrl: "asrUrl",
@@ -58,6 +59,11 @@ class SettingsStore {
     this.persistProfiles(this.profilesValue.filter((p) => p.id !== profileId));
   }
 
+  /** 全量覆盖（服务端同步拉取时用）。 */
+  saveProfiles(profiles: AgentProfile[]) {
+    this.persistProfiles(profiles);
+  }
+
   private persistProfiles(profiles: AgentProfile[]) {
     this.profilesValue = profiles;
     try {
@@ -66,6 +72,12 @@ class SettingsStore {
       /* ignore */
     }
     this.profileListeners.forEach((fn) => fn());
+    // 同步到服务端（API/CLI 的配置源）；不可达时静默，下次变更重试。
+    void fetch("/api/profiles", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profiles }),
+    }).catch(() => undefined);
   }
 
   subscribe(fn: () => void): () => void {
@@ -163,5 +175,35 @@ function parseProfiles(json: string): AgentProfile[] {
 }
 
 export const settingsStore = new SettingsStore();
+
+/** 浏览器侧 repository 注册表：配置源为 localStorage 的 settingsStore（服务端 API 用文件存储版）。 */
+export const registry = new RepositoryRegistry({
+  getProfiles: () => settingsStore.getProfiles(),
+  subscribeProfiles: (fn) => settingsStore.subscribeProfiles(fn),
+});
+
+/**
+ * 启动时与服务端配置对账（服务端文件为权威，API/CLI 依赖它）：
+ * 服务端空且本地有 → 推送本地；两边都有 → 合并（服务端优先，按 type+serverUrl 去重），
+ * 避免覆盖掉任一侧独有的配置。
+ */
+export function initServerProfileSync() {
+  void fetch("/api/profiles")
+    .then((r) => (r.ok ? (r.json() as Promise<{ profiles?: AgentProfile[] }>) : null))
+    .then((data) => {
+      const serverProfiles = data?.profiles;
+      if (Array.isArray(serverProfiles) && serverProfiles.length > 0) {
+        const merged = [...serverProfiles];
+        for (const local of settingsStore.getProfiles()) {
+          const dup = merged.some((p) => p.type === local.type && p.serverUrl === local.serverUrl);
+          if (!dup) merged.push(local);
+        }
+        settingsStore.saveProfiles(merged);
+      } else if (settingsStore.getProfiles().length > 0) {
+        settingsStore.saveProfiles(settingsStore.getProfiles());
+      }
+    })
+    .catch(() => undefined);
+}
 
 export { profileConnectionKey };

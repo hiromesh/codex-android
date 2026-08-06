@@ -58,6 +58,7 @@ class RepositoryRegistry(private val settingsStore: SettingsStore) {
     private fun createRepository(profile: AgentProfile): CodexRepository = when (profile.type) {
         AgentType.CODEX -> WebSocketCodexRepository(profile)
         AgentType.KIMI -> KimiCodexRepository(profile)
+        AgentType.CLAUDE -> ClaudeCodexRepository(profile)
         else -> throw IllegalStateException("${profile.type.displayName} 暂未支持")
     }
 

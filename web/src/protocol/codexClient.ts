@@ -35,7 +35,7 @@ interface ConnectionConfig {
 interface PendingRpc {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: number;
+  timer: ReturnType<typeof setTimeout> | number;
 }
 
 type Json = Record<string, unknown>;
@@ -47,6 +47,8 @@ type Json = Record<string, unknown>;
  */
 export class CodexClient implements Repository {
   readonly events = new EventEmitter();
+  /** 服务端（Node）运行时需要绝对地址；浏览器留空走同源相对路径。 */
+  private readonly wsBase: string;
   private socket: WebSocket | null = null;
   private configKey: string | null = null;
   private currentThreadId: string | null = null;
@@ -61,7 +63,12 @@ export class CodexClient implements Repository {
   private turnThreads = new Map<string, string>();
   private recoveryActive = false;
 
-  constructor(private readonly profile: AgentProfile) {}
+  constructor(
+    private readonly profile: AgentProfile,
+    options: { apiBase?: string } = {},
+  ) {
+    this.wsBase = options.apiBase ? options.apiBase.replace(/^http/, "ws") : "";
+  }
 
   close() {
     this.socket?.close(1000, "profile changed");
@@ -265,9 +272,9 @@ export class CodexClient implements Repository {
   private connect(desired: ConnectionConfig): Promise<void> {
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({ url: desired.url, token: desired.token });
-      const socket = new WebSocket(`/ws/codex?${params.toString()}`);
+      const socket = new WebSocket(`${this.wsBase}/ws/codex?${params.toString()}`);
       socket.binaryType = "arraybuffer";
-      const timeout = window.setTimeout(() => {
+      const timeout = setTimeout(() => {
         socket.close();
         reject(new Error("连接服务器超时"));
       }, CONNECT_TIMEOUT_MS);
@@ -314,7 +321,7 @@ export class CodexClient implements Repository {
     const message: Json = { id, method };
     if (params !== undefined) message.params = params;
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
+      const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} 请求超时`));
       }, RPC_TIMEOUT_MS);

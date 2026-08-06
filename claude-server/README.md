@@ -31,6 +31,14 @@ node claude_server.js            # 默认 127.0.0.1:58628
 | `MAX_SESSIONS` | 4 | 并发会话硬上限（SDK 每次 query 起一个 claude 子进程） |
 | `QUERY_TIMEOUT_MS` | 1800000 (30min) | 单轮 query 超时（SDK 默认 10min 偏短） |
 | `AUTH_TOKEN` | 自动生成 | 覆盖鉴权 token（否则读/写 `~/.claude/server-token`） |
+| `LIST_CLI_SESSIONS` | `false` | **默认隔离**：列表只显示本服务创建的会话，不扫描本机 CLI 会话（避免 web 干扰 CLI 正在跑的会话）。设 `true` 恢复共享（能看到 CLI 开过的所有会话） |
+
+### 会话互斥（web/CLI 并发写保护）
+
+- **turn 前检测**：目标会话被交互式 `claude` 进程占用（`claude -r <id>` / `--resume=` / `--session-id`，自动排除 SDK 子进程）时拒绝，返回错误「该会话正在被 CLI 使用」。
+- **锁文件**：turn 期间写 `~/.claude/server-locks/<serverId>.lock`（含 pid/时间），结束即删；CLI 侧为黑盒无法强制，只能靠文档自觉。
+- **已知局限**：`claude -r` 交互选择器启动的进程不带会话 id，识别不到；此时用 `LIST_CLI_SESSIONS=false` 隔离最稳妥。
+- 单连接异常不会拖垮整个服务（进程级 uncaughtException/unhandledRejection 兜底）。
 
 前置条件：`claude` CLI 已安装并登录（`claude` 跑一次 `/login`，OAuth 或 `claude auth login --console`），
 `~/.claude/` 里要有登录态——SDK 子进程自动继承。

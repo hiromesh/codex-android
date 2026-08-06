@@ -3,7 +3,7 @@ package com.hiro.codex_android.data
 import java.util.UUID
 
 /**
- * Agent 类型。CODEX / KIMI 已有完整实现；其余类型先在设置中可见、标注"暂未支持"。
+ * Agent 类型。CODEX / KIMI / CLAUDE 已有完整实现；其余类型先在设置中可见、标注"暂未支持"。
  */
 enum class AgentType(
     val wireValue: String,
@@ -17,7 +17,7 @@ enum class AgentType(
 ) {
     CODEX("codex", "Codex", "C", 0xFF10A37F, true),
     KIMI("kimi", "Kimi Code", "K", 0xFF3E63DD, true),
-    CLAUDE("claude", "Claude Code", "A", 0xFFD97757, false),
+    CLAUDE("claude", "Claude Code", "A", 0xFFD97757, true),
     OPENCODE("opencode", "OpenCode", "O", 0xFF8B5CF6, false),
     ;
 
@@ -29,6 +29,7 @@ enum class AgentType(
         fun defaultUrl(type: AgentType): String = when (type) {
             CODEX -> "wss://codex.waibozishu.com:8443"
             KIMI -> "https://kimi.waibozishu.com:8443"
+            CLAUDE -> "https://claude.waibozishu.com:8443"
             else -> ""
         }
     }

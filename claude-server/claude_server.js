@@ -13,7 +13,9 @@
 // 持久化到 ~/.claude/server-sessions.json，服务重启后 App 可继续 resume。
 //
 // 历史会话（GET /sessions 列表 / messages）直接扫 ~/.claude/projects/*/*.jsonl——
-// 因此 App 能看到本机 CLI 开过的所有 claude 会话。
+// 因此 App 默认能看到本机 CLI 开过的所有 claude 会话（LIST_CLI_SESSIONS=false 可隔离）。
+// 互斥：turn 前检测该会话是否被交互式 claude 进程占用（cliActiveSessionIds），
+// 占用则拒绝；turn 期间写 ~/.claude/server-locks/<serverId>.lock 作为可见信号。
 
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -21,13 +23,23 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
+import { execFileSync } from 'node:child_process'
 import { query } from '@anthropic-ai/claude-agent-sdk'
+
+// 单连接异常不能让整个服务挂掉（手机端经常断线、SDK 子进程偶发报错）
+process.on('uncaughtException', e => console.error('[claude-web] uncaughtException:', e?.message ?? e))
+process.on('unhandledRejection', e => console.error('[claude-web] unhandledRejection:', e?.message ?? e))
 
 const PORT = parseInt(process.env.PORT || '58628')
 const HOST = process.env.HOST || '127.0.0.1'
 const WORKSPACE = process.env.WORKSPACE || os.homedir()
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '4')
 const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || (30 * 60 * 1000))  // SDK 默认 10min 太短
+// 默认隔离：列表只显示本服务创建的会话，不扫描本机 CLI 会话（避免 web 干扰 CLI 正在跑的会话）；
+// 想共享（看到 CLI 开过的所有会话）再设 LIST_CLI_SESSIONS=true
+const LIST_CLI_SESSIONS = process.env.LIST_CLI_SESSIONS === 'true'
+// turn 期间的互斥锁目录（web 侧持有；CLI 侧为黑盒，只能靠文档与自觉）
+const LOCK_DIR = path.join(os.homedir(), '.claude', 'server-locks')
 const TOKEN_FILE = path.join(os.homedir(), '.claude', 'server-token')
 const SESSIONS_FILE = path.join(os.homedir(), '.claude', 'server-sessions.json')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
@@ -62,6 +74,9 @@ function persist() {
         claude_session_id: s.claudeSessionId || serverId,
         cwd: s.cwd,
         created_at: s.createdAt,
+        // 已删除的会话不能因重新注册进 sessions map 而复活：deleted 标志必须保留
+        ...(persisted[serverId]?.deleted ? { deleted: true } : {}),
+        ...(s.dsp ? { dsp: true } : {}),
       }
     }
   }
@@ -158,6 +173,8 @@ function extractUserText(message) {
 /** 会话列表：扫全部 jsonl，按文件 mtime 倒序；过滤已删除的。 */
 function listSessionFiles() {
   const out = []
+  // 隔离模式：不扫描 CLI 会话，列表只显示本服务创建的会话
+  if (!LIST_CLI_SESSIONS) return out
   let dirs = []
   try { dirs = fs.readdirSync(PROJECTS_DIR) } catch { return out }
   for (const dir of dirs) {
@@ -167,6 +184,9 @@ function listSessionFiles() {
       const full = path.join(PROJECTS_DIR, dir, file)
       const id = file.slice(0, -'.jsonl'.length)
       if (persisted[id]?.deleted) continue
+      // server 会话删除时标记的是 serverId；其 claudeSessionId 的 jsonl 也要过滤
+      const ownedByDeleted = Object.values(persisted).some(p => p.deleted && p.claude_session_id === id)
+      if (ownedByDeleted) continue
       let stat
       try { stat = fs.statSync(full) } catch { continue }
       out.push({
@@ -182,6 +202,49 @@ function listSessionFiles() {
   return out
 }
 
+/** 扫描本机交互式 claude 进程，返回其 resume 的会话 id 集合（web/CLI 互斥用）。
+ * 只识别显式带 id 的启动（claude -r <id> / --resume= 等）；SDK 子进程（stream-json）不算，
+ * 交互选择器（claude -r 无参）不带 id，识别不到——这是尽力而为的互斥，不是安全边界。 */
+function cliActiveSessionIds() {
+  const ids = new Set()
+  try {
+    const out = execFileSync('ps', ['-axww', '-o', 'pid=,comm=,args='], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+    for (const line of out.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/)
+      if (!m) continue
+      const [, , comm, args] = m
+      if (comm !== 'claude' || args.includes('stream-json')) continue
+      const patterns = [
+        /--resume=([A-Za-z0-9-]+)/g, /--resume ([A-Za-z0-9-]+)/g,
+        /--session-id=([A-Za-z0-9-]+)/g, /--session-id ([A-Za-z0-9-]+)/g,
+        /(?:^|\s)-r ([A-Za-z0-9-]+)/g,
+      ]
+      for (const re of patterns) for (const mm of args.matchAll(re)) if (mm[1]) ids.add(mm[1])
+    }
+  } catch { /* ps 不可用时放弃互斥检测 */ }
+  return ids
+}
+
+/** turn 期间写锁文件（进程存活标记；结束/异常时由 finally 清理）。 */
+function writeTurnLock(serverId, s) {
+  try {
+    fs.mkdirSync(LOCK_DIR, { recursive: true })
+    const lockPath = path.join(LOCK_DIR, serverId + '.lock')
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: Date.now(), cwd: s.cwd, claudeSessionId: s.claudeSessionId || null }))
+    return lockPath
+  } catch { return null }
+}
+
+/** 系统注入的 user 消息：文本里带 Claude Code 系统标签（isMeta 没标全时的兜底判定）。 */
+function looksLikeSystemInjection(obj) {
+  try {
+    const content = (obj.message || {}).content
+    const blocks = Array.isArray(content) ? content : (typeof content === 'string' ? [{ type: 'text', text: content }] : [])
+    const text = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    return /<\s*(system-reminder|task-notification|local-command-caveat|command-name|command-message|command-args)\b/i.test(text)
+  } catch { return false }
+}
+
 /** 解析 jsonl 为消息列表：过滤非 user/assistant 行与 isMeta 注入行。 */
 function readMessages(file) {
   const items = []
@@ -192,10 +255,19 @@ function readMessages(file) {
       try { obj = JSON.parse(line) } catch { continue }
       if (obj.type !== 'user' && obj.type !== 'assistant') continue
       if (obj.isMeta) continue
+      // Claude Code 的系统注入（system-reminder/task-notification 等）常不带 isMeta，
+      // 文本里带系统标签的 user 消息不是真人输入，直接过滤
+      if (obj.type === 'user' && looksLikeSystemInjection(obj)) continue
       const message = obj.message || {}
-      const content = typeof message.content === 'string'
-        ? [{ type: 'text', text: message.content }]
-        : (Array.isArray(message.content) ? message.content : [])
+      // assistant 消息的 content 在 SDK 流式写入期间偶发为「字符串形态」
+      // （含回显用户消息+思考+回答的累积全文）；等规范块数组形态再返回，
+      // 避免中间态全文（含噪音）被 App/CLI 当作一条回答展示。
+      if (obj.type === 'assistant' && typeof message.content === 'string') continue
+      // 流式中间态还会出现「用户消息回显」块（'你: <用户消息>' 或 'User: ...'），
+      // 不是回答正文，剥掉避免 App/CLI 显示噪音
+      const content = Array.isArray(message.content)
+        ? message.content.filter(b => !(b && b.type === 'text' && typeof b.text === 'string' && /^(你|User):/.test(b.text.trim())))
+        : []
       items.push({
         type: obj.type,
         role: message.role || obj.type,
@@ -250,9 +322,31 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/sessions') {
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '100') || 100, 500)
     const all = listSessionFiles()
-    // 当前活跃会话也补进去（jsonl 可能还没落盘）
+    // 隔离模式：本服务创建过的会话（persisted 记录，含服务重启前的）也要列出
+    if (!LIST_CLI_SESSIONS) {
+      for (const [serverId, meta] of Object.entries(persisted)) {
+        if (meta.deleted) continue
+        if (all.some(i => i.session_id === serverId)) continue
+        const file = meta.claude_session_id ? findJsonl(meta.claude_session_id) : null
+        all.push({
+          session_id: serverId,
+          cwd: meta.cwd || (file ? cwdOfJsonl(file) : '') || WORKSPACE,
+          updated_at: file ? Math.floor(fs.statSync(file).mtimeMs / 1000) : Math.floor(Date.now() / 1000),
+          created_at: meta.created_at || 0,
+          last_prompt: file ? (firstUserPrompt(file) || '') : '',
+        })
+      }
+    }
+    // 当前活跃会话也补进去（jsonl 可能还没落盘）；同一会话的 jsonl 已出现时
+    // 用 jsonl 的标题/时间并以 serverId 展示，避免「serverId + claudeSessionId」重复条目
     for (const [serverId, s] of sessions) {
       if (all.some(i => i.session_id === serverId)) continue
+      const scanned = s.claudeSessionId ? all.find(i => i.session_id === s.claudeSessionId) : undefined
+      if (scanned) {
+        all.splice(all.indexOf(scanned), 1)
+        all.push({ ...scanned, session_id: serverId })
+        continue
+      }
       all.push({
         session_id: serverId,
         cwd: s.cwd,
@@ -269,6 +363,9 @@ const server = http.createServer((req, res) => {
   const m = url.pathname.match(/^\/sessions\/([^/]+)$/)
   if (m && req.method === 'GET') {
     const id = m[1]
+    if (persisted[id]?.deleted || Object.values(persisted).some(p => p.deleted && p.claude_session_id === id)) {
+      res.writeHead(404); res.end('session deleted'); return
+    }
     const active = sessions.get(id)
     const file = findJsonl(id)
     if (!active && !file) { res.writeHead(404); res.end('session not found'); return }
@@ -314,7 +411,22 @@ const wss = new WebSocketServer({ server })
 
 wss.on('connection', (ws, req) => {
   const m = req.url?.match(/^\/sessions\/([^/]+)\/ws$/)
-  const s = m && sessions.get(m[1])
+  const serverId = m && m[1]
+  let s = m && sessions.get(m[1])
+  if (!s && m) {
+    // 服务重启后内存态丢失：从 persisted 恢复注册，否则 resume 旧会话的 WS 会被拒
+    const meta = persisted[m[1]]
+    if (meta && !meta.deleted) {
+      s = {
+        claudeSessionId: meta.claude_session_id || m[1],
+        cwd: meta.cwd || WORKSPACE,
+        dsp: !!meta.dsp,
+        ws: null, abort: null, pending: new Map(),
+        createdAt: meta.created_at || Math.floor(Date.now() / 1000),
+      }
+      sessions.set(m[1], s)
+    }
+  }
   if (!s) { ws.close(4004, 'unknown session'); return }
   // resume 目标（claude session id）：持久化映射 > jsonl 文件名（= claude session id）> 全新会话无
   if (!s.claudeSessionId) {
@@ -334,6 +446,13 @@ wss.on('connection', (ws, req) => {
   // 把 App 的一条 user 消息跑一轮 SDK query；后续消息用 resume 续上下文
   const run = async text => {
     if (s.abort) { send({ type: 'error', error: 'turn already in progress' }); return }
+    // web/CLI 互斥：该会话正被 CLI 进程打开时拒绝，避免两个进程并发写同一份 jsonl
+    const cliIds = cliActiveSessionIds()
+    if (cliIds.has(serverId) || (s.claudeSessionId && cliIds.has(s.claudeSessionId))) {
+      send({ type: 'error', error: { type: 'error', message: '该会话正在被 CLI（claude -r）使用，请先在 CLI 侧结束，或新建会话' } })
+      return
+    }
+    const lockPath = writeTurnLock(serverId, s)
     const abort = new AbortController()
     s.abort = abort
     const timeout = setTimeout(() => abort.abort(), QUERY_TIMEOUT_MS)
@@ -398,6 +517,7 @@ wss.on('connection', (ws, req) => {
     } finally {
       clearTimeout(timeout)
       s.abort = null
+      try { if (lockPath) fs.unlinkSync(lockPath) } catch { /* 锁文件清理失败不阻断 */ }
     }
   }
 

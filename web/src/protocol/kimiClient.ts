@@ -24,7 +24,7 @@ type Json = Record<string, unknown>;
 interface PendingAck {
   resolve: (value: Json) => void;
   reject: (error: Error) => void;
-  timer: number;
+  timer: ReturnType<typeof setTimeout> | number;
 }
 
 /**
@@ -38,6 +38,9 @@ export class KimiClient implements Repository {
   readonly events = new EventEmitter();
 
   private readonly wsUrl: string;
+  /** 服务端（Node）运行时需要绝对地址；浏览器留空走同源相对路径。 */
+  private readonly apiBase: string;
+  private readonly wsBase: string;
   private socket: WebSocket | null = null;
   private wsReady = false;
   private connectPromise: Promise<void> | null = null;
@@ -63,10 +66,15 @@ export class KimiClient implements Repository {
   private subscribedSessions = new Set<string>();
   private sessionCursors = new Map<string, { seq?: number; epoch?: string }>();
 
-  constructor(private readonly profile: AgentProfile) {
+  constructor(
+    private readonly profile: AgentProfile,
+    options: { apiBase?: string } = {},
+  ) {
     const { httpBase, wsScheme } = deriveBases(profile.serverUrl);
     const host = httpBase.replace(/^https?:\/\//, "");
     this.wsUrl = `${wsScheme}://${host}/api/v1/ws`;
+    this.apiBase = options.apiBase ?? "";
+    this.wsBase = options.apiBase ? options.apiBase.replace(/^http/, "ws") : "";
   }
 
   close() {
@@ -331,7 +339,7 @@ export class KimiClient implements Repository {
   private async rest(method: string, path: string, body?: Json): Promise<Json> {
     const { url, token } = requireValidProfile(this.profile);
     const sep = path.includes("?") ? "&" : "?";
-    const target = `/api/relay/kimi${path}${sep}url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
+    const target = `${this.apiBase}/api/relay/kimi${path}${sep}url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
     const response = await fetch(target, {
       method,
       headers: body !== undefined ? { "Content-Type": "application/json; charset=utf-8" } : undefined,
@@ -356,8 +364,8 @@ export class KimiClient implements Repository {
 
       const params = new URLSearchParams({ url: this.wsUrl, token });
       await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(`/ws/kimi?${params.toString()}`);
-        const timeout = window.setTimeout(() => {
+        const socket = new WebSocket(`${this.wsBase}/ws/kimi?${params.toString()}`);
+        const timeout = setTimeout(() => {
           socket.close();
           reject(new Error("连接 Kimi 超时"));
         }, CONNECT_TIMEOUT_MS);
@@ -406,7 +414,7 @@ export class KimiClient implements Repository {
   private async control(type: string, payload: Json): Promise<Json> {
     const id = `c-${this.nextControlId++}`;
     return new Promise<Json>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
+      const timer = setTimeout(() => {
         this.pendingAcks.delete(id);
         reject(new Error(`${type} 超时`));
       }, RPC_TIMEOUT_MS);
