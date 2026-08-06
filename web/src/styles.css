@@ -802,8 +802,9 @@ body.resizing-cols * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  /* 与麦克风按钮（30px）同尺寸 */
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--accent-white);
   color: var(--accent-on-white);
@@ -822,7 +823,7 @@ body.resizing-cols * {
 
 .send-spinner {
   position: absolute;
-  inset: 3px;
+  inset: 2px;
   border-radius: 50%;
   border: 2px solid rgba(21, 24, 29, 0.3);
   border-top-color: rgba(21, 24, 29, 0.85);
@@ -896,6 +897,13 @@ body.resizing-cols * {
 
 .model-row-selected {
   color: var(--on-surface-variant);
+}
+
+.model-empty {
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--on-surface-variant);
+  text-align: center;
 }
 
 .effort-list {

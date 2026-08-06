@@ -99,6 +99,7 @@ export function ChatScreen({
           generating={state.generating}
           actionBusy={state.actionBusy}
           agentName={state.agentName}
+          agentType={state.agentType}
           model={state.model}
           effort={state.effort}
           models={state.availableModels}

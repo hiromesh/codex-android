@@ -9,6 +9,8 @@ interface InputBarProps {
   actionBusy?: boolean;
   /** 展示名，如 Codex / Kimi；缺省按 Codex */
   agentName?: string;
+  /** Agent 类型；claude 无模型概念，隐藏模型选择器 */
+  agentType?: string;
   model: string;
   effort: string;
   models: ModelInfo[];
@@ -26,6 +28,7 @@ export function ChatInputBar(props: InputBarProps) {
   const {
     generating,
     actionBusy = false,
+    agentType,
     model,
     effort,
     models,
@@ -105,7 +108,9 @@ export function ChatInputBar(props: InputBarProps) {
         </div>
       )}
       <div className="input-tools">
-        {models.length > 0 && (
+        {agentType !== "claude" && (
+          // 非 claude 始终显示模型/档位选择器：模型列表暂不可用时也保留入口
+          // （可查看/手动输入档位），避免「没有设置的地方」。
           <ModelSelector model={model} effort={effort} models={models} onSelect={onSelectConfiguration} />
         )}
         <div className="input-tools-right">
@@ -129,7 +134,7 @@ export function ChatInputBar(props: InputBarProps) {
               disabled={!text.trim() || actionBusy}
               onClick={send}
             >
-              <SendIcon size={16} />
+              <SendIcon size={15} />
             </button>
           )}
         </div>
@@ -169,7 +174,7 @@ function ModelSelector({
 
   // 与 Android 一致：当前模型不在列表时回退到服务端默认模型（isDefault / 第一项）。
   const selected = models.find((m) => m.id === model) ?? models.find((m) => m.isDefault) ?? models[0];
-  const label = selected?.displayName ?? "选择模型";
+  const label = selected?.displayName ?? (model || "选择模型");
 
   return (
     <div className="model-selector" ref={rootRef}>
@@ -183,6 +188,9 @@ function ModelSelector({
         <div className="model-menu">
           {effortModelId == null ? (
             <div className="model-list">
+              {models.length === 0 && (
+                <div className="model-empty">模型列表不可用（检查服务器连接）</div>
+              )}
               {models.filter((m) => !m.hidden).map((m) => (
                 <button
                   key={m.id}

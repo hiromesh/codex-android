@@ -85,7 +85,8 @@ export class ClaudeClient implements Repository {
   }
 
   async startThread(_model?: string): Promise<Thread> {
-    const body: Json = { dangerously_skip_permissions: false };
+    // 默认跳过权限审批（与用户本地 claude 习惯一致）；需要审批时 claude-server 仍会回调。
+    const body: Json = { dangerously_skip_permissions: true };
     const cwd = this.profile.defaultCwd.trim();
     if (cwd) body.cwd = cwd;
     const resp = await this.restPost("/sessions", body);
@@ -431,7 +432,8 @@ export class ClaudeClient implements Repository {
           break;
         }
         case "thinking": {
-          const delta = stringOr(block.thinking) || stringOr(block.text) || "";
+          // 模型思考内容里也常引用 system-reminder 等系统标签，同样剥离。
+          const delta = this.tagStripper.feed(stringOr(block.thinking) || stringOr(block.text) || "");
           if (!delta) continue;
           const itemId = reasoningItemId(session);
           if (!session.startedReasoning.has(itemId)) {
@@ -500,8 +502,11 @@ function parseMessageItems(items: Json[]): ThreadItem[] {
   items.forEach((msg, index) => {
     switch (msg.type) {
       case "user": {
+        // Claude Code 系统注入的 user 消息（system-reminder/task-notification 等，
+        // isMeta 常没标全）：文本带系统标签的不是真人输入，历史里不展示。
+        if (looksLikeSystemInjection(msg)) return;
         const content = arrayOf(msg.content)
-          .map((block) => (block.type === "text" ? { type: "text", text: stringOr(block.text) ?? "" } : null))
+          .map((block) => (block.type === "text" ? { type: "text", text: stripSystemTags(stringOr(block.text) ?? "") } : null))
           .filter((b): b is { type: string; text: string } => b != null);
         if (content.length === 0 || content.every((b) => !b.text.trim())) return;
         out.push({ kind: "userMessage", id: `hist-u-${userIndex++}`, content });
@@ -569,6 +574,15 @@ function ensureUniqueIds(items: ThreadItem[]): ThreadItem[] {
 }
 
 /* ---------------- Claude 系统标签剥离 ---------------- */
+
+/** 系统注入的 user 消息判定（与 claude-server 过滤规则一致，双保险）。 */
+function looksLikeSystemInjection(msg: Json): boolean {
+  const text = arrayOf(msg.content)
+    .filter((b) => b.type === "text")
+    .map((b) => stringOr(b.text) ?? "")
+    .join("\n");
+  return /<\s*(system-reminder|task-notification|local-command-caveat|command-name|command-message|command-args)\b/i.test(text);
+}
 
 /** 历史消息是完整文本，正则直接剥掉 <system-reminder>/<system> 标签。 */
 function stripSystemTags(text: string): string {

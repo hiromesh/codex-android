@@ -71,6 +71,11 @@ export class ThreadListStore {
         case "turnStarted":
           this.locallyWorkingKeys.add(`${profileId}:${event.threadId}`);
           this.updateThreadStatus(profileId, event.threadId, "busy");
+          // 新建会话刚发第一条消息时列表里还没有它：立即拉一次让它出现，
+          // 不用等 30s 轮询或手动刷新（后台刷新不闪 loading）。
+          if (!this.state.entries.some((entry) => entryKey(entry) === `${profileId}:${event.threadId}`)) {
+            this.refresh();
+          }
           break;
         case "turnCompleted":
           this.locallyWorkingKeys.delete(`${profileId}:${event.threadId}`);
@@ -256,13 +261,20 @@ export class ChatStore {
     // §8.2：订阅全局事件流，按 threadId 过滤
     this.unsubEvents = repo.events.subscribe((event) => this.handleEvent(event));
     // §3.8：模型选择器数据；当前模型不在列表里时改用服务端默认（避免新会话显示 Codex 占位名）。
+    // 已有会话的 effort 以会话为准（loadThread 已读取），listModels 只喂菜单数据，
+    // 不再用默认模型的档位列表去夹会话 effort，避免「打开会话 effort 变了」。
     void repo
       .listModels()
       .then((models) => this.setState((state) => {
         const preferred = models.find((m) => m.isDefault) ?? models[0];
         const modelId = models.some((m) => m.id === state.model) ? state.model : (preferred?.id ?? state.model);
         const modelInfo = models.find((m) => m.id === modelId) ?? preferred;
-        return { ...state, availableModels: models, model: modelId, effort: resolveEffort(modelInfo, state.effort) };
+        return {
+          ...state,
+          availableModels: models,
+          model: modelId,
+          effort: state.threadId == null ? resolveEffort(modelInfo, state.effort) : state.effort,
+        };
       }))
       .catch((error) => this.setState({ ...this.state, error: error instanceof Error ? error.message : String(error) }));
     // 浏览器切回前台时主动对账（对应 Android 的 foreground reconcile）。
@@ -430,8 +442,18 @@ export class ChatStore {
     // 一点发送就停掉全部 TTS（含上一段还在播的尾音），与能否真正发出无关。
     ttsManager.stop();
     const action = parseChatAction(trimmed);
-    if (action) this.dispatchAction(action);
-    else this.send(trimmed);
+    if (action) {
+      // Claude：/compact 等交互命令由 CLI 在 stream-json 模式自行拦截执行，
+      // 不能走 codex 的 thread/compact/start（Claude 不支持），直接透传为普通消息。
+      // /model /effort /goal 本就不在动作列表里，天然走普通消息透传。
+      if (this.state.agentType === "claude" && action.kind === "compact") {
+        this.send(trimmed);
+        return;
+      }
+      this.dispatchAction(action);
+    } else {
+      this.send(trimmed);
+    }
   };
 
   dismissActionPrompt = () => {
