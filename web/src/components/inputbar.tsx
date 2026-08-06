@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ModelInfo, TokenUsage } from "../types";
+import { filterSlashCommands } from "../slashCommands";
 import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, MicIcon, SendIcon, StopIcon } from "./icons";
 
 interface InputBarProps {
   generating: boolean;
+  /** 斜杠动作进行中（compact/fork 等），禁用连点与发消息。 */
+  actionBusy?: boolean;
   /** 展示名，如 Codex / Kimi；缺省按 Codex */
   agentName?: string;
   model: string;
@@ -20,11 +23,22 @@ interface InputBarProps {
 }
 
 export function ChatInputBar(props: InputBarProps) {
-  const { generating, model, effort, models, onSelectConfiguration, tokenUsage, asrTranscript, asrRecording } = props;
+  const {
+    generating,
+    actionBusy = false,
+    model,
+    effort,
+    models,
+    onSelectConfiguration,
+    tokenUsage,
+    asrTranscript,
+    asrRecording,
+  } = props;
   const agentName = props.agentName?.trim() || "Codex";
   const [text, setText] = useState("");
   const [voicePrefix, setVoicePrefix] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const slashSuggestions = filterSlashCommands(text);
 
   // ASR 的 result.text 是“本次完整识别结果”而不是 delta。记录启动前文本后每次替换尾部，
   // 既能实时上屏，也不会因服务端重复返回全文而重复追加。
@@ -38,11 +52,19 @@ export function ChatInputBar(props: InputBarProps) {
 
   const send = () => {
     const message = text.trim();
-    if (!message || generating) return;
+    if (!message || generating || actionBusy) return;
     // 发送时不接收停麦克风后的最终回包，确保当前输入就是被发出的内容。
     props.onStopAsr();
     setVoicePrefix(null);
     props.onSend(message);
+    setText("");
+    textareaRef.current?.focus();
+  };
+
+  const runSlash = (command: string) => {
+    props.onStopAsr();
+    setVoicePrefix(null);
+    props.onSend(command);
     setText("");
     textareaRef.current?.focus();
   };
@@ -72,8 +94,20 @@ export function ChatInputBar(props: InputBarProps) {
           }
         }}
       />
+      {slashSuggestions.length > 0 && (
+        <div className="slash-menu">
+          {slashSuggestions.map((command) => (
+            <button key={command.trigger} className="slash-row" onClick={() => runSlash(command.trigger)}>
+              <code className="slash-trigger">{command.trigger}</code>
+              <span>{command.title}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="input-tools">
-        <ModelSelector model={model} effort={effort} models={models} onSelect={onSelectConfiguration} />
+        {models.length > 0 && (
+          <ModelSelector model={model} effort={effort} models={models} onSelect={onSelectConfiguration} />
+        )}
         <div className="input-tools-right">
           <button
             className={`asr-button ${asrRecording ? "asr-button-recording" : ""}`}
@@ -89,7 +123,12 @@ export function ChatInputBar(props: InputBarProps) {
               <StopIcon size={9} />
             </button>
           ) : (
-            <button className="send-button" title="发送" disabled={!text.trim()} onClick={send}>
+            <button
+              className="send-button"
+              title="发送"
+              disabled={!text.trim() || actionBusy}
+              onClick={send}
+            >
               <SendIcon size={16} />
             </button>
           )}
@@ -128,8 +167,9 @@ function ModelSelector({
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
 
-  const selected = models.find((m) => m.id === model);
-  const label = selected?.displayName ?? "GPT-5.6-Terra";
+  // 与 Android 一致：当前模型不在列表时回退到服务端默认模型（isDefault / 第一项）。
+  const selected = models.find((m) => m.id === model) ?? models.find((m) => m.isDefault) ?? models[0];
+  const label = selected?.displayName ?? "选择模型";
 
   return (
     <div className="model-selector" ref={rootRef}>
@@ -143,14 +183,22 @@ function ModelSelector({
         <div className="model-menu">
           {effortModelId == null ? (
             <div className="model-list">
-              {models.map((m) => (
+              {models.filter((m) => !m.hidden).map((m) => (
                 <button
                   key={m.id}
                   className={`model-row ${m.id === model ? "model-row-selected" : ""}`}
-                  onClick={() => setEffortModelId(m.id)}
+                  onClick={() => {
+                    if (m.supportedReasoningEfforts.length === 0) {
+                      // 无推理档位时直接选中默认档位，不进二级空菜单。
+                      onSelect(m.id, m.defaultReasoningEffort);
+                      setOpen(false);
+                    } else {
+                      setEffortModelId(m.id);
+                    }
+                  }}
                 >
                   <span>{m.displayName}</span>
-                  {m.id === model ? <CheckIcon size={16} /> : <ChevronRightIcon size={16} />}
+                  {m.id === model ? <CheckIcon size={16} /> : m.supportedReasoningEfforts.length > 0 ? <ChevronRightIcon size={16} /> : null}
                 </button>
               ))}
             </div>
@@ -206,8 +254,26 @@ function EffortMenu({
   );
 }
 
+/** 与 Android effortLabel 一致：off/on/low/medium/high/xhigh/max → Off/On/Low/Medium/High/XHigh/Max。 */
 export function effortLabel(effort: string): string {
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
+  switch (effort.toLowerCase()) {
+    case "off":
+      return "Off";
+    case "on":
+      return "On";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "XHigh";
+    case "max":
+      return "Max";
+    default:
+      return effort.charAt(0).toUpperCase() + effort.slice(1);
+  }
 }
 
 /* ---------------- 上下文占用环 ---------------- */

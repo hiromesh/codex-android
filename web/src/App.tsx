@@ -3,15 +3,20 @@ import { ChatScreen } from "./screens/ChatScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { Sidebar } from "./screens/Sidebar";
 import { ThreadListStore } from "./stores";
-import { PlusIcon } from "./components/icons";
+import { NewThreadMenu } from "./components/NewThreadMenu";
 
-type Route = { view: "threads" } | { view: "chat"; threadId: string } | { view: "settings" };
+type Route =
+  | { view: "threads" }
+  | { view: "chat"; profileId: string; threadId: string }
+  | { view: "settings" };
 
 function parseHash(hash: string): Route {
   const match = hash.replace(/^#\/?/, "");
   if (match.startsWith("settings")) return { view: "settings" };
-  const chatMatch = match.match(/^chat\/(.+)$/);
-  if (chatMatch) return { view: "chat", threadId: decodeURIComponent(chatMatch[1]) };
+  const chatMatch = match.match(/^chat\/([^/]+)\/(.+)$/);
+  if (chatMatch) {
+    return { view: "chat", profileId: decodeURIComponent(chatMatch[1]), threadId: decodeURIComponent(chatMatch[2]) };
+  }
   return { view: "threads" };
 }
 
@@ -85,17 +90,20 @@ export function App() {
     setResizing(true);
   };
 
+  const activeChat =
+    route.view === "chat" ? { profileId: route.profileId, threadId: route.threadId } : null;
+
   return (
     <div className={`app ${sidebarOpen ? "sidebar-open" : ""}`} style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
       <Sidebar
         store={threadListStore}
-        activeThreadId={route.view === "chat" && route.threadId !== "new" ? route.threadId : null}
-        onOpenThread={(id) => navigate(`#/chat/${encodeURIComponent(id)}`)}
-        onNewThread={() => navigate("#/chat/new")}
+        activeChat={activeChat}
+        onOpenThread={(profileId, threadId) => navigate(`#/chat/${encodeURIComponent(profileId)}/${encodeURIComponent(threadId)}`)}
+        onNewThread={(profileId) => navigate(`#/chat/${encodeURIComponent(profileId)}/new`)}
         onOpenSettings={() => navigate("#/settings")}
-        onThreadDeleted={(id) => {
+        onThreadDeleted={(profileId, threadId) => {
           // 删除的正是当前打开的会话时，返回列表
-          if (route.view === "chat" && route.threadId === id) navigate("#/");
+          if (activeChat && activeChat.profileId === profileId && activeChat.threadId === threadId) navigate("#/");
         }}
       />
       <div
@@ -116,16 +124,24 @@ export function App() {
           />
         )}
         {route.view === "chat" && (
-          <ChatScreen key={route.threadId} threadId={route.threadId} onBack={() => navigate("#/")} onOpenSidebar={() => setSidebarOpen(true)} />
+          <ChatScreen
+            key={`${route.profileId}:${route.threadId}`}
+            profileId={route.profileId}
+            threadId={route.threadId}
+            onBack={() => navigate("#/")}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenThread={(threadId) => navigate(`#/chat/${encodeURIComponent(route.profileId)}/${encodeURIComponent(threadId)}`)}
+          />
         )}
         {route.view === "threads" && (
           <div className="empty-state">
             <div className="empty-state-title">Codex Web</div>
             <div className="empty-state-sub">选择一个会话，或开始新的对话</div>
-            <button className="btn btn-primary empty-state-btn" onClick={() => navigate("#/chat/new")}>
-              <PlusIcon size={15} />
-              新会话
-            </button>
+            <NewThreadMenu
+              onPick={(profileId) => navigate(`#/chat/${encodeURIComponent(profileId)}/new`)}
+              onOpenSettings={() => navigate("#/settings")}
+              className="btn btn-primary empty-state-btn"
+            />
           </div>
         )}
       </main>

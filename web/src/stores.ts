@@ -1,22 +1,58 @@
-import { client } from "./client";
+import { registry } from "./protocol/registry";
 import { startAsr, AsrSession } from "./asr";
 import { settingsStore } from "./settings";
-import { ApprovalDecision, CodexEvent, ModelInfo, Thread, ThreadItem, TokenUsage } from "./types";
+import { ttsManager } from "./tts";
+import { parseChatAction, ParsedChatAction } from "./slashCommands";
+import {
+  AgentProfile,
+  AgentTypeId,
+  agentTypeFromWireValue,
+  ApprovalDecision,
+  CodexEvent,
+  ModelInfo,
+  ReviewTarget,
+  Thread,
+  ThreadItem,
+  TokenUsage,
+} from "./types";
+
+/* ---------------- TTS 单例（全局：agent 回答流式播报） ---------------- */
+
+export { ttsManager };
+
+/* ---------------- 列表项 ---------------- */
+
+export interface ThreadEntry {
+  profileId: string;
+  profileName: string;
+  agentType: AgentTypeId;
+  thread: Thread;
+}
+
+/** 跨服务器 threadId 可能冲突；展示与导航都以 key 为准。 */
+export function entryKey(entry: ThreadEntry): string {
+  return `${entry.profileId}:${entry.thread.id}`;
+}
 
 /* ---------------- ThreadListStore（对应 ThreadListViewModel） ---------------- */
 
 export interface ThreadListUiState {
   loading: boolean;
-  threads: Thread[];
+  entries: ThreadEntry[];
+  /** 启用的配置，供新建会话时选择 */
+  profiles: AgentProfile[];
+  /** profileId -> 错误信息；部分配置失败不影响其他配置的卡片 */
+  profileErrors: Map<string, string>;
   error: string | null;
 }
 
 export class ThreadListStore {
-  private state: ThreadListUiState = { loading: false, threads: [], error: null };
+  private state: ThreadListUiState = { loading: false, entries: [], profiles: [], profileErrors: new Map(), error: null };
   private listeners = new Set<() => void>();
   private unsubEvents: (() => void) | null = null;
+  private unsubProfiles: (() => void) | null = null;
   private pollTimer: number | null = null;
-  private locallyWorkingThreadIds = new Set<string>();
+  private locallyWorkingKeys = new Set<string>();
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -29,97 +65,114 @@ export class ThreadListStore {
 
   init = () => {
     if (this.unsubEvents) return;
-    // 聊天页即使不在前台，客户端仍会分发 turn 事件；首页据此即时更新任务卡片状态。
-    this.unsubEvents = client.subscribe((event) => {
+    // 聊天页即使不在前台，仓库仍会分发 turn 事件；首页据此即时更新任务卡片状态。
+    this.unsubEvents = registry.subscribeAll(({ profileId, event }) => {
       switch (event.type) {
         case "turnStarted":
-          this.locallyWorkingThreadIds.add(event.threadId);
-          this.updateThreadStatus(event.threadId, "busy");
+          this.locallyWorkingKeys.add(`${profileId}:${event.threadId}`);
+          this.updateThreadStatus(profileId, event.threadId, "busy");
           break;
         case "turnCompleted":
-          this.locallyWorkingThreadIds.delete(event.threadId);
-          this.updateThreadStatus(event.threadId, "idle");
+          this.locallyWorkingKeys.delete(`${profileId}:${event.threadId}`);
+          this.updateThreadStatus(profileId, event.threadId, "idle");
           break;
         case "threadReconciled":
-          this.replaceThread(event.thread);
+          this.replaceThread(profileId, event.thread);
           break;
         // 多端同步：web/其他设备删除或归档后，本机列表即时移除
         case "threadDeleted":
         case "threadArchived":
-          this.removeLocally(event.threadId);
+          this.removeLocally(profileId, event.threadId);
           break;
         default:
           break;
       }
     });
+    // 配置增删/启停后重新聚合列表
+    this.unsubProfiles = settingsStore.subscribeProfiles(() => this.refresh());
+    this.setState({ ...this.state, profiles: settingsStore.getProfiles().filter((p) => p.enabled) });
     this.refresh();
-    // 首页可见时保持轻量轮询（与 Android 8s 一致），让其他正在工作的任务也能及时显示状态。
-    this.pollTimer = window.setInterval(() => this.refresh(), 8_000);
+    // 首页可见时保持轻量轮询（与 Android 30s 一致），让其他正在工作的任务也能及时显示状态。
+    this.pollTimer = window.setInterval(() => this.refresh(), 30_000);
   }
 
   dispose = () => {
     this.unsubEvents?.();
     this.unsubEvents = null;
+    this.unsubProfiles?.();
+    this.unsubProfiles = null;
     if (this.pollTimer != null) clearInterval(this.pollTimer);
     this.pollTimer = null;
   };
 
-  /** §3.4 thread/list */
+  /** 聚合所有启用配置的 §3.4 thread/list，按更新时间倒序混排。 */
   refresh = () => {
     void (async () => {
-      this.setState({ ...this.state, loading: true, error: null });
-      try {
-        const page = await client.listThreads(undefined, 15);
-        const threads = page.data.map((thread) =>
-          this.locallyWorkingThreadIds.has(thread.id) ? { ...thread, status: { type: "busy" } } : thread,
-        );
-        this.setState({ ...this.state, loading: false, threads });
-      } catch (error) {
-        this.setState({
-          ...this.state,
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      // 后台轮询（30s）不闪 loading：只有首次进入/列表为空时才显示加载条，避免侧栏周期性抽动。
+      const showLoading = this.state.entries.length === 0;
+      if (showLoading) this.setState({ ...this.state, loading: true, error: null });
+      const { entries, errors } = await registry.listAllThreads();
+      const effective = entries.map(({ profile, thread }) => ({
+        profileId: profile.id,
+        profileName: profile.name.trim() || agentTypeFromWireValue(profile.type).displayName,
+        agentType: profile.type,
+        thread: this.locallyWorkingKeys.has(`${profile.id}:${thread.id}`)
+          ? { ...thread, status: { type: "busy" } }
+          : thread,
+      }));
+      this.setState({
+        ...this.state,
+        loading: false,
+        entries: effective,
+        profileErrors: errors,
+      });
     })();
   }
 
   /** 归档（软删除，可恢复）：先本地移除，失败则刷新列表恢复 */
-  archiveThread = (threadId: string) => {
-    this.removeLocally(threadId);
-    void client.archiveThread(threadId).catch((error) => {
-      this.setState({ ...this.state, error: `归档失败：${error instanceof Error ? error.message : String(error)}` });
-      this.refresh();
-    });
+  archiveThread = (profileId: string, threadId: string) => {
+    this.removeLocally(profileId, threadId);
+    void registry
+      .repositoryFor(profileId)
+      .archiveThread(threadId)
+      .catch((error) => {
+        this.setState({ ...this.state, error: `归档失败：${error instanceof Error ? error.message : String(error)}` });
+        this.refresh();
+      });
   };
 
   /** 彻底删除（不可恢复）：先本地移除，失败则刷新列表恢复 */
-  deleteThread = (threadId: string) => {
-    this.removeLocally(threadId);
-    void client.deleteThread(threadId).catch((error) => {
-      this.setState({ ...this.state, error: `删除失败：${error instanceof Error ? error.message : String(error)}` });
-      this.refresh();
-    });
+  deleteThread = (profileId: string, threadId: string) => {
+    this.removeLocally(profileId, threadId);
+    void registry
+      .repositoryFor(profileId)
+      .deleteThread(threadId)
+      .catch((error) => {
+        this.setState({ ...this.state, error: `删除失败：${error instanceof Error ? error.message : String(error)}` });
+        this.refresh();
+      });
   };
 
-  private removeLocally(threadId: string) {
-    this.locallyWorkingThreadIds.delete(threadId);
-    this.setState({ ...this.state, threads: this.state.threads.filter((t) => t.id !== threadId) });
+  private removeLocally(profileId: string, threadId: string) {
+    this.locallyWorkingKeys.delete(`${profileId}:${threadId}`);
+    this.setState({ ...this.state, entries: this.state.entries.filter((entry) => entryKey(entry) !== `${profileId}:${threadId}`) });
   }
 
-  private updateThreadStatus(threadId: string, status: string) {
+  private updateThreadStatus(profileId: string, threadId: string, status: string) {
+    const key = `${profileId}:${threadId}`;
     this.setState({
       ...this.state,
-      threads: this.state.threads.map((thread) =>
-        thread.id === threadId ? { ...thread, status: { type: status } } : thread,
+      entries: this.state.entries.map((entry) =>
+        entryKey(entry) === key ? { ...entry, thread: { ...entry.thread, status: { type: status } } } : entry,
       ),
     });
   }
 
-  private replaceThread(updated: Thread) {
+  private replaceThread(profileId: string, updated: Thread) {
+    const key = `${profileId}:${updated.id}`;
     this.setState({
       ...this.state,
-      threads: this.state.threads.map((thread) => (thread.id === updated.id ? updated : thread)),
+      entries: this.state.entries.map((entry) => (entryKey(entry) === key ? { ...entry, thread: updated } : entry)),
     });
   }
 
@@ -131,7 +184,16 @@ export class ThreadListStore {
 
 /* ---------------- ChatStore（对应 ChatViewModel） ---------------- */
 
+export type PendingActionPrompt =
+  | { kind: "reviewTarget" }
+  | { kind: "confirmUndo"; numTurns: number }
+  | { kind: "confirmShell"; command: string };
+
 export interface ChatUiState {
+  profileId: string;
+  agentType: AgentTypeId;
+  /** 输入框占位文案，如 Codex / Kimi */
+  agentName: string;
   /** null 表示新会话，发第一条消息时才真正 thread/start */
   threadId: string | null;
   title: string;
@@ -140,8 +202,11 @@ export interface ChatUiState {
   items: ThreadItem[];
   loading: boolean;
   generating: boolean;
+  /** 斜杠动作进行中（compact/fork 等），禁用连点与发消息。 */
+  actionBusy: boolean;
   currentTurnId: string | null;
   pendingApproval: (CodexEvent & { type: "approvalRequest" }) | null;
+  pendingActionPrompt: PendingActionPrompt | null;
   availableModels: ModelInfo[];
   tokenUsage: TokenUsage | null;
   asrTranscript: string | null;
@@ -154,37 +219,51 @@ const DEFAULT_EFFORT = "medium";
 const TURN_RECONCILE_INTERVAL_MS = 15_000;
 
 export class ChatStore {
-  private state: ChatUiState = {
-    threadId: null,
-    title: "新会话",
-    model: DEFAULT_MODEL,
-    effort: DEFAULT_EFFORT,
-    items: [],
-    loading: false,
-    generating: false,
-    currentTurnId: null,
-    pendingApproval: null,
-    availableModels: [],
-    tokenUsage: null,
-    asrTranscript: null,
-    asrRecording: false,
-    error: null,
-  };
+  private state: ChatUiState;
   private listeners = new Set<() => void>();
   private unsubEvents: () => void;
   private watchdogTimer: number | null = null;
   private asrSession: AsrSession | null = null;
   private asrSessionId: string | null = null;
+  private openThreadListeners = new Set<(threadId: string) => void>();
 
-  constructor(threadId: string | null) {
-    this.state = { ...this.state, threadId };
+  constructor(profileId: string, threadId: string | null) {
+    const profile = settingsStore.getProfiles().find((p) => p.id === profileId && p.enabled);
+    const type = profile ? profile.type : "codex";
+    this.state = {
+      profileId,
+      agentType: type,
+      agentName: profile?.name.trim() || agentTypeFromWireValue(type).displayName,
+      threadId,
+      title: "新会话",
+      model: DEFAULT_MODEL,
+      effort: DEFAULT_EFFORT,
+      items: [],
+      loading: false,
+      generating: false,
+      actionBusy: false,
+      currentTurnId: null,
+      pendingApproval: null,
+      pendingActionPrompt: null,
+      availableModels: [],
+      tokenUsage: null,
+      asrTranscript: null,
+      asrRecording: false,
+      error: null,
+    };
+    const repo = registry.repositoryFor(profileId);
     if (threadId) this.loadThread(threadId);
     // §8.2：订阅全局事件流，按 threadId 过滤
-    this.unsubEvents = client.subscribe((event) => this.handleEvent(event));
-    // §3.8：模型选择器数据
-    void client
+    this.unsubEvents = repo.events.subscribe((event) => this.handleEvent(event));
+    // §3.8：模型选择器数据；当前模型不在列表里时改用服务端默认（避免新会话显示 Codex 占位名）。
+    void repo
       .listModels()
-      .then((models) => this.setState({ ...this.state, availableModels: models }))
+      .then((models) => this.setState((state) => {
+        const preferred = models.find((m) => m.isDefault) ?? models[0];
+        const modelId = models.some((m) => m.id === state.model) ? state.model : (preferred?.id ?? state.model);
+        const modelInfo = models.find((m) => m.id === modelId) ?? preferred;
+        return { ...state, availableModels: models, model: modelId, effort: resolveEffort(modelInfo, state.effort) };
+      }))
       .catch((error) => this.setState({ ...this.state, error: error instanceof Error ? error.message : String(error) }));
     // 浏览器切回前台时主动对账（对应 Android 的 foreground reconcile）。
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -199,9 +278,17 @@ export class ChatStore {
     return this.state;
   };
 
+  /** /fork 成功后通知 UI 跳到新会话（一次性）。 */
+  subscribeOpenThread = (fn: (threadId: string) => void): (() => void) => {
+    this.openThreadListeners.add(fn);
+    return () => this.openThreadListeners.delete(fn);
+  };
+
   dispose = () => {
     this.unsubEvents();
     this.stopAsr();
+    // 离开会话页即停掉语音播报（对应 Android ChatViewModel.onCleared）。
+    ttsManager.stop();
     if (this.watchdogTimer != null) clearInterval(this.watchdogTimer);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
   };
@@ -212,24 +299,29 @@ export class ChatStore {
 
   /** 进入已有会话时，先 §3.3 thread/resume 再 §3.5 thread/read 拉完整历史 */
   private loadThread(threadId: string) {
+    const repo = registry.repositoryFor(this.state.profileId);
     void (async () => {
       this.setState({ ...this.state, loading: true });
       try {
-        const resumed = await client.resumeThread(threadId);
-        const loaded = await client.readThread(threadId, true);
+        const resumed = await repo.resumeThread(threadId);
+        const loaded = await repo.readThread(threadId, true);
         // 少数旧服务端的 read 响应不带会话设置，保留 resume 的返回。
         const thread: Thread = {
           ...loaded,
           model: loaded.model ?? resumed.model,
           effort: loaded.effort ?? resumed.effort,
         };
-        this.setState({
-          ...this.state,
-          loading: false,
-          title: thread.name ?? (thread.preview || "会话"),
-          model: thread.model ?? this.state.model,
-          effort: thread.effort ?? this.state.effort,
-          items: thread.turns.flatMap((turn) => turn.items),
+        this.setState((state) => {
+          const modelId = thread.model ?? state.model;
+          const modelInfo = state.availableModels.find((m) => m.id === modelId);
+          return {
+            ...state,
+            loading: false,
+            title: thread.name ?? (thread.preview || "会话"),
+            model: modelId,
+            effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
+            items: thread.turns.flatMap((turn) => turn.items),
+          };
         });
       } catch (error) {
         this.setState({
@@ -249,20 +341,40 @@ export class ChatStore {
       case "turnStarted":
         this.setState({ ...this.state, generating: true, currentTurnId: event.turnId });
         break;
-      case "itemStarted":
-        this.appendItem(event.item);
+      case "itemStarted": {
+        const item =
+          event.item.kind === "contextCompaction"
+            ? // 以事件为准：started = 压缩进行中，避免服务端缺 status 时误显示「已压缩」。
+              { ...event.item, status: "inProgress" }
+            : event.item;
+        this.appendItem(item);
         break;
+      }
+      // TTS 只朗读回答正文：正文 delta 边到边合成，工具/思考等其他事件不喂。
       case "agentMessageDelta":
         this.appendDelta(event.itemId, event.delta);
+        ttsManager.onAgentDelta(event.delta);
         break;
       case "reasoningSummaryDelta":
         this.appendReasoningDelta(event.itemId, event.summaryIndex, event.delta);
         break;
       // item/completed 里是完整 item，直接替换以校对
-      case "itemCompleted":
-        this.replaceItem(event.item);
+      case "itemCompleted": {
+        const item =
+          event.item.kind === "contextCompaction"
+            ? { ...event.item, status: "completed" }
+            : event.item;
+        this.replaceItem(item);
+        if (item.kind === "agentMessage") ttsManager.onAgentMessageFinished();
         break;
-      case "turnCompleted":
+      }
+      case "turnCompleted": {
+        if (event.status === "completed") {
+          // 兜底：个别服务端可能漏发 agentMessage 的 item/completed。
+          ttsManager.onAgentMessageFinished();
+        } else {
+          ttsManager.stop();
+        }
         this.setState({
           ...this.state,
           generating: false,
@@ -272,6 +384,7 @@ export class ChatStore {
         });
         this.stopWatchdog();
         break;
+      }
       case "tokenUsageUpdated":
         this.setState({ ...this.state, tokenUsage: event.usage });
         break;
@@ -280,6 +393,7 @@ export class ChatStore {
         break;
       // 多端同步：当前会话被 web/其他设备删除或归档
       case "threadDeleted":
+        ttsManager.stop();
         this.stopWatchdog();
         this.setState({
           ...this.state,
@@ -290,6 +404,7 @@ export class ChatStore {
         });
         break;
       case "threadArchived":
+        ttsManager.stop();
         this.stopWatchdog();
         this.setState({
           ...this.state,
@@ -305,10 +420,106 @@ export class ChatStore {
     }
   }
 
+  /**
+   * 输入框发送入口：命中 `/compact` `/review` `/fork` `/undo` 或 `!cmd` 时走动作接口，
+   * 不插入用户气泡、不触发 turn/start；其余仍按普通对话发送。
+   */
+  submit = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // 一点发送就停掉全部 TTS（含上一段还在播的尾音），与能否真正发出无关。
+    ttsManager.stop();
+    const action = parseChatAction(trimmed);
+    if (action) this.dispatchAction(action);
+    else this.send(trimmed);
+  };
+
+  dismissActionPrompt = () => {
+    this.setState({ ...this.state, pendingActionPrompt: null });
+  };
+
+  confirmReview = (target: ReviewTarget) => {
+    this.setState({ ...this.state, pendingActionPrompt: null });
+    this.runAction("审查", (threadId) =>
+      registry
+        .repositoryFor(this.state.profileId)
+        .startReview(threadId, target)
+        .then((result) => {
+          this.setState({ ...this.state, generating: true, currentTurnId: result.turn.id, error: null });
+          this.startWatchdog(result.reviewThreadId);
+        }),
+    );
+  };
+
+  confirmUndo = (numTurns: number) => {
+    this.setState({ ...this.state, pendingActionPrompt: null });
+    this.runAction("撤销", (threadId) =>
+      registry
+        .repositoryFor(this.state.profileId)
+        .rollbackThread(threadId, numTurns)
+        .then((thread) => this.applyServerThread(thread)),
+    );
+  };
+
+  confirmShell = (command: string) => {
+    this.setState({ ...this.state, pendingActionPrompt: null });
+    this.runAction("Shell", (threadId) => registry.repositoryFor(this.state.profileId).shellCommand(threadId, command));
+  };
+
+  private dispatchAction(action: ParsedChatAction) {
+    const state = this.state;
+    if (state.generating || state.actionBusy) return;
+    switch (action.kind) {
+      case "compact":
+        this.runAction("压缩", (threadId) => registry.repositoryFor(this.state.profileId).startCompact(threadId));
+        break;
+      case "reviewNeedTarget":
+        this.setState({ ...this.state, pendingActionPrompt: { kind: "reviewTarget" } });
+        break;
+      case "review":
+        this.confirmReview(action.target);
+        break;
+      case "fork":
+        this.runAction("分叉", (threadId) =>
+          registry
+            .repositoryFor(this.state.profileId)
+            .forkThread(threadId)
+            .then((forked) => {
+              for (const fn of [...this.openThreadListeners]) fn(forked.id);
+            }),
+        );
+        break;
+      case "undo":
+        this.setState({ ...this.state, pendingActionPrompt: { kind: "confirmUndo", numTurns: action.numTurns } });
+        break;
+      case "shell":
+        this.setState({ ...this.state, pendingActionPrompt: { kind: "confirmShell", command: action.command } });
+        break;
+    }
+  }
+
+  private runAction(label: string, block: (threadId: string) => Promise<void>) {
+    const threadId = this.state.threadId;
+    if (!threadId) {
+      this.setState({ ...this.state, error: `请先发送一条消息创建会话，再使用 ${label}` });
+      return;
+    }
+    if (this.state.actionBusy || this.state.generating) return;
+    ttsManager.stop();
+    this.setState({ ...this.state, actionBusy: true, error: null });
+    void block(threadId)
+      .catch((error) => {
+        this.setState({ ...this.state, error: `${label} 失败：${error instanceof Error ? error.message : error}` });
+      })
+      .finally(() => this.setState({ ...this.state, actionBusy: false }));
+  }
+
   /** §3.6 turn/start */
   send = (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || this.state.generating) return;
+    if (!trimmed || this.state.generating || this.state.actionBusy) return;
+    ttsManager.stop();
+    const repo = registry.repositoryFor(this.state.profileId);
     void (async () => {
       let submittedThreadId: string | null = null;
       this.appendItem({ kind: "userMessage", id: localId(), content: [{ type: "text", text: trimmed }] });
@@ -319,11 +530,17 @@ export class ChatStore {
         if (existingId) {
           threadId = existingId;
         } else {
-          // 新会话：第一条消息时才真正 thread/start；effort 在建会话后、首条 turn 前写入设置。
+          // 新会话：第一条消息时才真正 thread/start（§3.2）；
+          // thread/start 只带模型；effort 在建会话后、首条 turn 前写入设置。
           const selection = this.state;
-          const thread = await client.startThread(selection.model || undefined);
-          if (selection.effort) {
-            await client.updateThreadSettings(thread.id, undefined, selection.effort);
+          const thread = await repo.startThread(selection.model || undefined);
+          // 建会话后把当前 UI 上的 model + effort 一并写入；Kimi 的 create 本身不生效。
+          try {
+            await repo.updateThreadSettings(thread.id, selection.model || thread.model || undefined, selection.effort || undefined);
+          } catch (settingsError) {
+            // Claude 不支持模型/档位切换：建会话后写设置会抛「暂不支持」，
+            // 不能让它阻断发消息；其余（codex/kimi）写失败仍按真实错误上抛。
+            if (!(settingsError instanceof Error) || !settingsError.message.includes("暂不支持")) throw settingsError;
           }
           this.setState({
             ...this.state,
@@ -335,7 +552,7 @@ export class ChatStore {
         }
         submittedThreadId = threadId;
         this.startWatchdog(threadId);
-        const turn = await client.startTurn(threadId, [{ type: "text", text: trimmed }]);
+        const turn = await repo.startTurn(threadId, [{ type: "text", text: trimmed }]);
         // 正常情况会由 turn/started 通知填入；如果通知稍晚，用 RPC 结果兜底。
         if (this.state.generating && this.state.currentTurnId == null) {
           this.setState({ ...this.state, currentTurnId: turn.id });
@@ -356,11 +573,15 @@ export class ChatStore {
 
   /** §3.7 turn/interrupt */
   interrupt = () => {
-    const { threadId, currentTurnId } = this.state;
-    if (!threadId || !currentTurnId) return;
-    void client.interruptTurn(threadId, currentTurnId).catch((error) =>
-      this.setState({ ...this.state, error: `中断失败：${error instanceof Error ? error.message : error}` }),
-    );
+    const { threadId, generating, currentTurnId } = this.state;
+    if (!threadId) return;
+    // generating 即可停；不强制 currentTurnId（Kimi 对账时可能是 meta 占位）。
+    if (!generating && currentTurnId == null) return;
+    ttsManager.stop();
+    void registry
+      .repositoryFor(this.state.profileId)
+      .interruptTurn(threadId, currentTurnId ?? "")
+      .catch((error) => this.setState({ ...this.state, error: `中断失败：${error instanceof Error ? error.message : error}` }));
   }
 
   /** 开始将麦克风 PCM 以 200ms 分包发送至 ASR */
@@ -403,10 +624,11 @@ export class ChatStore {
   reconcileAfterForeground = () => {
     const threadId = this.state.threadId;
     if (!threadId) return;
+    const repo = registry.repositoryFor(this.state.profileId);
     void (async () => {
       try {
-        const resumed = await client.resumeThread(threadId);
-        const loaded = await client.readThread(threadId, true);
+        const resumed = await repo.resumeThread(threadId);
+        const loaded = await repo.readThread(threadId, true);
         this.applyServerThread({
           ...loaded,
           model: loaded.model ?? resumed.model,
@@ -426,7 +648,8 @@ export class ChatStore {
         this.stopWatchdog();
         return;
       }
-      void client
+      void registry
+        .repositoryFor(this.state.profileId)
         .readThread(threadId, true)
         .then((thread) => this.applyServerThread(thread))
         .catch(() => undefined);
@@ -445,14 +668,17 @@ export class ChatStore {
     const request = this.state.pendingApproval;
     if (!request) return;
     this.setState({ ...this.state, pendingApproval: null });
-    void client.respondApproval(request.requestId, decision).catch((error) => {
-      // 应答失败时恢复弹窗让用户重试；否则审批在服务端永远挂起。
-      this.setState({
-        ...this.state,
-        pendingApproval: request,
-        error: `审批应答失败：${error instanceof Error ? error.message : error}`,
+    void registry
+      .repositoryFor(this.state.profileId)
+      .respondApproval(request.requestId, decision)
+      .catch((error) => {
+        // 应答失败时恢复弹窗让用户重试；否则审批在服务端永远挂起。
+        this.setState({
+          ...this.state,
+          pendingApproval: request,
+          error: `审批应答失败：${error instanceof Error ? error.message : error}`,
+        });
       });
-    });
   }
 
   reportErrorClear = () => {
@@ -464,15 +690,36 @@ export class ChatStore {
     const threadId = this.state.threadId;
     this.setState({ ...this.state, model: modelId, effort });
     if (threadId) {
-      void client.updateThreadSettings(threadId, modelId, effort).catch((error) =>
-        this.setState({ ...this.state, error: error instanceof Error ? error.message : String(error) }),
-      );
+      void registry
+        .repositoryFor(this.state.profileId)
+        .updateThreadSettings(threadId, modelId, effort)
+        .catch((error) => this.setState({ ...this.state, error: error instanceof Error ? error.message : String(error) }));
     }
     // 新会话还没建：只记本地状态，send() 会在建立后写入 effort。
   }
 
   private appendItem(item: ThreadItem) {
-    this.setState({ ...this.state, items: [...this.state.items, item] });
+    this.setState((state) => {
+      // reasoning 的 item/started 通常没有摘要；仅在服务端真的给出内容后展示。
+      if (item.kind === "reasoning" && item.summary.length === 0) return state;
+      // 发送时先插入 local-* 气泡；服务端随后会回传同一 userMessage。
+      // 用内容匹配并替换为服务端 itemId，防止同一条消息显示两遍。
+      if (item.kind === "userMessage") {
+        const localIndex = state.items.findIndex(
+          (existing) =>
+            existing.kind === "userMessage" &&
+            existing.id.startsWith("local-") &&
+            JSON.stringify(existing.content) === JSON.stringify(item.content),
+        );
+        if (localIndex >= 0) {
+          const items = [...state.items];
+          items[localIndex] = item;
+          return { ...state, items };
+        }
+        return { ...state, items: [...state.items, item] };
+      }
+      return { ...state, items: [...state.items, item] };
+    });
   }
 
   private appendDelta(itemId: string, delta: string) {
@@ -511,8 +758,21 @@ export class ChatStore {
     this.setState((state) => {
       const index = state.items.findIndex((it) => it.id === item.id);
       if (index >= 0) {
+        const existing = state.items[index];
+        const merged: ThreadItem =
+          item.kind === "commandExecution" && existing.kind === "commandExecution"
+            ? {
+                // completed 可能只带 output/status；保留 started 时的工具名，避免被 id 盖掉。
+                ...item,
+                command: item.command && item.command !== item.id ? item.command : existing.command,
+                cwd: item.cwd || existing.cwd,
+                output: item.output || existing.output,
+                exitCode: item.exitCode ?? existing.exitCode,
+                durationMs: item.durationMs ?? existing.durationMs,
+              }
+            : item;
         const items = [...state.items];
-        items[index] = item;
+        items[index] = merged;
         return { ...state, items };
       }
       if (item.kind === "reasoning" && item.summary.length === 0) {
@@ -546,12 +806,17 @@ export class ChatStore {
       const activeTurn = thread.turns.filter((t) => t.status === "inProgress").at(-1);
       const lastTurn = thread.turns.at(-1);
       const lastError = lastTurn && lastTurn.status === "failed" ? lastTurn.error : undefined;
+      const incomingItems = thread.turns.flatMap((turn) => turn.items);
+      // 对账若未带 items（Kimi snapshot 元数据同步），保留本地气泡，避免直播被残缺历史盖掉。
+      const replaceItems = incomingItems.length > 0;
+      const modelId = thread.model ?? state.model;
+      const modelInfo = state.availableModels.find((m) => m.id === modelId);
       if (activeTurn) {
         return {
           ...state,
           title: thread.name ?? (thread.preview || state.title),
-          model: thread.model ?? state.model,
-          effort: thread.effort ?? state.effort,
+          model: modelId,
+          effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
           generating: true,
           currentTurnId: activeTurn.id,
         };
@@ -559,9 +824,9 @@ export class ChatStore {
       return {
         ...state,
         title: thread.name ?? (thread.preview || state.title),
-        model: thread.model ?? state.model,
-        effort: thread.effort ?? state.effort,
-        items: thread.turns.flatMap((turn) => turn.items),
+        model: modelId,
+        effort: resolveEffort(modelInfo, thread.effort ?? state.effort),
+        items: replaceItems ? incomingItems : state.items,
         generating: false,
         currentTurnId: null,
         // 轮次结束时不可能有待应答审批（服务端在等应答就不会结束轮次），可安全清除。
@@ -581,4 +846,17 @@ export class ChatStore {
 
 function localId(): string {
   return `local-${crypto.randomUUID()}`;
+}
+
+/**
+ * 把当前 effort 对齐到模型支持的档位：空值、或不在 support 列表里时，改用模型默认/第一项。
+ * Kimi 常见 support 不含 medium，而 UI 初始是 medium，不夹会显示对不上勾选。
+ */
+export function resolveEffort(model: ModelInfo | undefined, effort: string | undefined): string {
+  const supported = model?.supportedReasoningEfforts ?? [];
+  const current = effort?.trim() || undefined;
+  if (current != null && (supported.length === 0 || supported.includes(current))) return current;
+  const fallback = model?.defaultReasoningEffort?.trim() || undefined;
+  if (fallback != null && (supported.length === 0 || supported.includes(fallback))) return fallback;
+  return supported[0] ?? current ?? "medium";
 }

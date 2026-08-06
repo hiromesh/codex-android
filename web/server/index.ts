@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { createServer } from "node:http";
 import { attachWsProxies } from "./wsProxies.js";
+import { registerRelay } from "./relay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, "../dist");
@@ -13,6 +14,9 @@ const server = createServer(app);
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "codex-web", time: Date.now() });
 });
+
+// Kimi / Claude 的 REST 控制面统一走同源转发（浏览器无法跨域带 Authorization 头）。
+registerRelay(app);
 
 attachWsProxies(server);
 

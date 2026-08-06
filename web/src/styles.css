@@ -174,7 +174,10 @@ body.resizing-cols * {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin: 6px 14px 12px;
+  /* 按钮是 .sidebar-list 的 flex 项（sticky 钉住），width 100% 与卡片
+     同宽伸缩（含滚动条占位），列表滚动时不会差一截。 */
+  width: 100%;
+  margin: 6px 0 12px;
   padding: 9px;
   border-radius: 10px;
   border: 1px solid var(--glass-border);
@@ -768,6 +771,8 @@ body.resizing-cols * {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 模型选择器隐藏（Claude 无模型概念）时，按钮组仍靠右，与安卓一致。 */
+  margin-left: auto;
 }
 
 .asr-button {
@@ -1161,17 +1166,15 @@ body.resizing-cols * {
 
 .dialog-card {
   width: min(340px, calc(100vw - 40px));
-  background: linear-gradient(180deg, rgba(59, 77, 97, 0.34), rgba(30, 41, 54, 0.5));
-  border: 1px solid rgba(242, 246, 252, 0.15);
-  border-radius: 20px;
-  padding: 24px 22px 20px;
+  background: var(--glass-popup);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 22px 20px 18px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  box-shadow:
-    0 24px 70px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(242, 246, 252, 0.07);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   animation: dialog-in 0.2s cubic-bezier(0.22, 1.2, 0.36, 1);
 }
 
@@ -1184,19 +1187,6 @@ body.resizing-cols * {
     opacity: 1;
     transform: none;
   }
-}
-
-.dialog-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: rgba(255, 136, 124, 0.12);
-  border: 1px solid rgba(255, 136, 124, 0.24);
-  color: var(--error);
-  margin-bottom: 8px;
 }
 
 .dialog-title {
@@ -1252,4 +1242,349 @@ body.resizing-cols * {
 .dialog-btn-danger:hover {
   filter: brightness(1.07);
   box-shadow: 0 10px 26px rgba(255, 110, 95, 0.36);
+}
+
+/* ---------- Agent 徽章（对应 Android AgentBadge） ---------- */
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* ---------- 新会话入口：0/1/多 profile 分流（对应 Android FAB） ---------- */
+
+.new-thread-menu {
+  position: relative;
+}
+
+/* 侧栏里的新会话按钮：按钮在滚动容器内 sticky 钉住，列表滚动时它保持在顶部；
+   底色盖住滚过的卡片，与侧栏背景同源不突兀。 */
+.sidebar-list .new-thread-menu {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--background);
+}
+
+.profile-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--glass-popup);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  padding: 5px 6px;
+}
+
+.profile-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 11px;
+  border-radius: 10px;
+  color: var(--on-background);
+  text-align: left;
+}
+
+.profile-picker-row:hover {
+  background: var(--surface-elevated);
+}
+
+/* 空状态里的新会话按钮也要能弹出选择菜单 */
+.empty-state .new-thread-menu {
+  display: inline-flex;
+}
+
+/* ---------- 侧栏：部分配置连接失败 ---------- */
+
+.sidebar-profile-error {
+  color: var(--error);
+  font-size: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 136, 124, 0.3);
+  border-radius: 10px;
+  background: rgba(255, 136, 124, 0.08);
+  word-break: break-all;
+}
+
+/* ---------- 斜杠命令菜单（输入 `/` 弹出） ---------- */
+
+.slash-menu {
+  margin: 2px 6px 6px;
+  background: var(--glass-popup);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  padding: 5px 6px;
+}
+
+.slash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 11px;
+  border-radius: 10px;
+  color: var(--on-background);
+  text-align: left;
+}
+
+.slash-row:hover {
+  background: var(--surface-elevated);
+}
+
+.slash-trigger {
+  min-width: 88px;
+  color: var(--link);
+  font-weight: 600;
+}
+
+/* ---------- 上下文压缩卡片（/compact） ---------- */
+
+.compaction-card {
+  cursor: default;
+  user-select: none;
+}
+
+.compaction-card:hover {
+  background: var(--surface);
+}
+
+.compaction-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.compaction-done {
+  color: var(--on-surface-variant);
+  font-size: 15px;
+}
+
+.compaction-text {
+  font-size: 13px;
+}
+
+/* ---------- 弹窗加宽（审查目标等） ---------- */
+
+.dialog-card-wide {
+  width: min(440px, calc(100vw - 40px));
+}
+
+/* ---------- 审查目标选择 ---------- */
+
+.review-target-row {
+  margin-top: 8px;
+}
+
+.review-target-input-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.review-target-input {
+  flex: 1;
+  background: var(--input-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  color: var(--on-background);
+  font: inherit;
+  padding: 10px 12px;
+  outline: none;
+  width: 100%;
+}
+
+.review-target-input:focus {
+  border-color: rgba(231, 237, 247, 0.5);
+}
+
+.review-target-go {
+  width: auto;
+  padding: 10px 16px;
+  flex-shrink: 0;
+}
+
+/* ---------- 设置页：Agent 服务器 ---------- */
+
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-card);
+  background: var(--surface-variant);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.profile-card:hover {
+  background: var(--surface-elevated);
+}
+
+.profile-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-card-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.profile-card-url {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-add-profile {
+  border-style: dashed;
+  color: var(--on-surface-variant);
+}
+
+/* ---------- 开关（对应 Android Switch） ---------- */
+
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.switch input,
+.switch-row input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-track {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--glass-border);
+  position: relative;
+  transition: background 0.15s;
+}
+
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--on-surface-variant);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.switch input:checked + .switch-track,
+.switch-row input:checked + .switch-track {
+  background: var(--ok);
+  border-color: transparent;
+}
+
+.switch input:checked + .switch-track::after,
+.switch-row input:checked + .switch-track::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.switch-row-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switch-row-text > span:first-child {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.switch-row-sub {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+/* ---------- Agent 类型选择（编辑弹窗） ---------- */
+
+.agent-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.agent-type-chip {
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--surface);
+  color: var(--on-background);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.agent-type-chip:hover:not(:disabled) {
+  background: var(--surface-elevated);
+}
+
+.agent-type-chip-selected {
+  background: var(--accent-white);
+  color: var(--accent-on-white);
+  border-color: transparent;
+}
+
+.agent-type-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.field-error {
+  color: var(--error);
+  font-size: 12.5px;
+  width: 100%;
+}
+
+.profile-delete-btn {
+  color: var(--error);
+  border-color: rgba(255, 136, 124, 0.3);
+}
+
+.profile-edit-card {
+  gap: 10px;
+}
+
+.profile-edit-card .field,
+.profile-edit-card .agent-type-chips,
+.profile-edit-card .field-error {
+  margin-top: 4px;
 }

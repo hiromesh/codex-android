@@ -1,14 +1,18 @@
 import {
   ApprovalDecision,
-  CodexEvent,
+  AgentProfile,
   Content,
   ModelInfo,
+  ReviewStartResult,
+  ReviewTarget,
   Thread,
   ThreadItem,
   ThreadPage,
   Turn,
-} from "./types";
-import { settingsStore } from "./settings";
+} from "../types";
+import { requireValidWsProfile } from "./http";
+import { EventEmitter } from "./events";
+import { Repository } from "./repository";
 
 const CONTEXT_BASELINE_TOKENS = 12_000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -21,7 +25,7 @@ const APPROVAL_METHODS = new Set([
 ]);
 
 const CLIENT_NAME = "codex-web";
-const CLIENT_VERSION = "0.1.0";
+const CLIENT_VERSION = "1.0.0";
 
 interface ConnectionConfig {
   url: string;
@@ -38,10 +42,11 @@ type Json = Record<string, unknown>;
 
 /**
  * codex app-server 单 WebSocket 实现，逻辑与 Android WebSocketCodexRepository 一致：
- * 每次 RPC 前完成 initialize/initialized 握手；配置变更后关闭旧连接重新握手；
+ * 每次 RPC 前完成 initialize/initialized 握手；配置变更后由 Registry 重建实例；
  * 通知与审批由同一 reader 分发；断线后对进行中的轮次做 resume+read 对账。
  */
-class CodexClient {
+export class CodexClient implements Repository {
+  readonly events = new EventEmitter();
   private socket: WebSocket | null = null;
   private configKey: string | null = null;
   private currentThreadId: string | null = null;
@@ -54,16 +59,16 @@ class CodexClient {
   private pending = new Map<number, PendingRpc>();
   private itemThreads = new Map<string, string>();
   private turnThreads = new Map<string, string>();
-  private listeners = new Set<(event: CodexEvent) => void>();
   private recoveryActive = false;
 
-  subscribe(fn: (event: CodexEvent) => void): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
+  constructor(private readonly profile: AgentProfile) {}
 
-  private emit(event: CodexEvent) {
-    for (const fn of [...this.listeners]) fn(event);
+  close() {
+    this.socket?.close(1000, "profile changed");
+    this.socket = null;
+    this.configKey = null;
+    this.attachedThreadId = null;
+    this.failPending(new Error("连接已关闭"));
   }
 
   /** §3.1 initialize + initialized */
@@ -116,6 +121,16 @@ class CodexClient {
     }
   }
 
+  /** §3.10 thread/archive：归档会话（软删除，列表默认隐藏，可 unarchive 恢复） */
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request("thread/archive", { threadId });
+  }
+
+  /** §3.10 thread/delete：彻底删除会话（不可恢复） */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.request("thread/delete", { threadId });
+  }
+
   /** §3.6 turn/start */
   async startTurn(threadId: string, input: Content[]): Promise<Turn> {
     this.currentThreadId = threadId;
@@ -152,16 +167,6 @@ class CodexClient {
     return Array.isArray(result.data) ? (result.data as Json[]).map(parseModel) : [];
   }
 
-  /** §3.10 thread/archive：归档会话（软删除，列表默认隐藏，可 unarchive 恢复） */
-  async archiveThread(threadId: string): Promise<void> {
-    await this.request("thread/archive", { threadId });
-  }
-
-  /** §3.10 thread/delete：彻底删除会话（不可恢复） */
-  async deleteThread(threadId: string): Promise<void> {
-    await this.request("thread/delete", { threadId });
-  }
-
   /** §3.9② thread/settings/update */
   async updateThreadSettings(threadId: string, model?: string, effort?: string): Promise<void> {
     const params: Json = { threadId };
@@ -170,8 +175,56 @@ class CodexClient {
     await this.request("thread/settings/update", params);
   }
 
+  /** §CODEX_ACTIONS_API.1 thread/compact/start：压缩上下文（/compact），立即返回 */
+  async startCompact(threadId: string): Promise<void> {
+    await this.ensureThreadAttached(threadId);
+    await this.request("thread/compact/start", { threadId });
+  }
+
+  /** §CODEX_ACTIONS_API.2 review/start：发起代码审查（/review） */
+  async startReview(threadId: string, target: ReviewTarget, delivery = "inline"): Promise<ReviewStartResult> {
+    await this.ensureThreadAttached(threadId);
+    this.currentThreadId = threadId;
+    this.activeTurnThreadId = threadId;
+    const result = await this.requestRaw("review/start", {
+      threadId,
+      target: reviewTargetToJson(target),
+      delivery,
+    });
+    const turn = parseTurn(result.turn as Json);
+    const reviewThreadId = nullableString(result, "reviewThreadId") ?? threadId;
+    this.turnThreads.set(turn.id, reviewThreadId);
+    this.currentThreadId = reviewThreadId;
+    return { turn, reviewThreadId };
+  }
+
+  /** §CODEX_ACTIONS_API.3 thread/fork：分叉会话（/fork） */
+  async forkThread(threadId: string, lastTurnId?: string): Promise<Thread> {
+    await this.ensureThreadAttached(threadId);
+    const params: Json = { threadId };
+    if (lastTurnId) params.lastTurnId = lastTurnId;
+    const result = await this.request("thread/fork", params);
+    return threadFromResult(result, "thread/fork missing thread");
+  }
+
+  /** §CODEX_ACTIONS_API.4 thread/rollback：砍掉末尾 N 轮（/undo） */
+  async rollbackThread(threadId: string, numTurns = 1): Promise<Thread> {
+    await this.ensureThreadAttached(threadId);
+    const result = await this.request("thread/rollback", {
+      threadId,
+      numTurns: Math.max(1, numTurns),
+    });
+    return threadFromResult(result, "thread/rollback missing thread");
+  }
+
+  /** §CODEX_ACTIONS_API.5 thread/shellCommand：在会话上下文跑 shell（!cmd） */
+  async shellCommand(threadId: string, command: string): Promise<void> {
+    await this.ensureThreadAttached(threadId);
+    await this.request("thread/shellCommand", { threadId, command });
+  }
+
   private async ensureInitialized(): Promise<void> {
-    const desired = toConnectionConfig();
+    const desired = toConnectionConfig(this.profile);
     if (this.socket && this.configKey === desiredKey(desired)) return;
 
     this.socket?.close(1000, "connection settings changed");
@@ -334,7 +387,7 @@ class CodexClient {
       this.sendErrorResponse(message.id as number, -32601, `unsupported method: ${method}`);
       return;
     }
-    this.emit({
+    this.events.emit({
       type: "approvalRequest",
       requestId: message.id as number,
       threadId: String(params.threadId ?? this.currentThreadId ?? ""),
@@ -355,18 +408,20 @@ class CodexClient {
         if (threadId) this.currentThreadId = threadId;
         if (threadId) this.activeTurnThreadId = threadId;
         if (turnId && threadId) this.turnThreads.set(turnId, threadId);
-        if (threadId) this.emit({ type: "turnStarted", threadId, turnId });
+        if (threadId) this.events.emit({ type: "turnStarted", threadId, turnId });
         break;
       }
       case "item/started":
       case "item/completed": {
-        const item = parseItem(params.item as Json | undefined);
+        const isStarted = message.method === "item/started";
+        // contextCompaction 的 item/started 常不带 status；按事件阶段给默认值，避免一调用就显示「已压缩」。
+        const item = parseItem(params.item as Json | undefined, isStarted ? "inProgress" : "completed");
         if (!item) break;
         const threadId = String(params.threadId ?? this.itemThreads.get(item.id) ?? this.currentThreadId ?? "");
         if (threadId) this.itemThreads.set(item.id, threadId);
         if (!threadId) break;
-        this.emit(
-          message.method === "item/started"
+        this.events.emit(
+          isStarted
             ? { type: "itemStarted", threadId, item }
             : { type: "itemCompleted", threadId, item },
         );
@@ -377,7 +432,7 @@ class CodexClient {
         const threadId = String(params.threadId ?? this.itemThreads.get(itemId) ?? this.currentThreadId ?? "");
         if (threadId && itemId) this.itemThreads.set(itemId, threadId);
         if (!threadId) break;
-        this.emit({ type: "agentMessageDelta", threadId, itemId, delta: String(params.delta ?? "") });
+        this.events.emit({ type: "agentMessageDelta", threadId, itemId, delta: String(params.delta ?? "") });
         break;
       }
       case "item/reasoning/summaryTextDelta": {
@@ -385,7 +440,7 @@ class CodexClient {
         const threadId = String(params.threadId ?? this.itemThreads.get(itemId) ?? this.currentThreadId ?? "");
         if (threadId && itemId) this.itemThreads.set(itemId, threadId);
         if (!threadId) break;
-        this.emit({
+        this.events.emit({
           type: "reasoningSummaryDelta",
           threadId,
           itemId,
@@ -399,7 +454,7 @@ class CodexClient {
         const turnId = String(turn?.id ?? "");
         const threadId = String(params.threadId ?? this.turnThreads.get(turnId) ?? this.currentThreadId ?? "");
         if (threadId) {
-          this.emit({
+          this.events.emit({
             type: "turnCompleted",
             threadId,
             turnId,
@@ -412,12 +467,12 @@ class CodexClient {
       }
       case "thread/deleted": {
         const threadId = String(params.threadId ?? "");
-        if (threadId) this.emit({ type: "threadDeleted", threadId });
+        if (threadId) this.events.emit({ type: "threadDeleted", threadId });
         break;
       }
       case "thread/archived": {
         const threadId = String(params.threadId ?? "");
-        if (threadId) this.emit({ type: "threadArchived", threadId });
+        if (threadId) this.events.emit({ type: "threadArchived", threadId });
         break;
       }
       case "thread/tokenUsage/updated": {
@@ -428,7 +483,7 @@ class CodexClient {
           const window = usage.modelContextWindow == null ? 0 : Number(usage.modelContextWindow);
           const used = Math.max(0, last - CONTEXT_BASELINE_TOKENS);
           const effectiveWindow = Math.max(0, window - CONTEXT_BASELINE_TOKENS);
-          if (threadId) this.emit({ type: "tokenUsageUpdated", threadId, usage: { usedTokens: used, contextWindow: effectiveWindow } });
+          if (threadId) this.events.emit({ type: "tokenUsageUpdated", threadId, usage: { usedTokens: used, contextWindow: effectiveWindow } });
         }
         break;
       }
@@ -450,7 +505,7 @@ class CodexClient {
           // resumeThread 会对新 socket 执行 initialize + attach。
           await this.resumeThread(threadId);
           const thread = await this.readThreadRaw(threadId, true);
-          this.emit({ type: "threadReconciled", threadId: thread.id, thread });
+          this.events.emit({ type: "threadReconciled", threadId: thread.id, thread });
           const activeTurn = thread.turns.filter((t) => t.status === "inProgress").at(-1);
           this.activeTurnThreadId = activeTurn ? threadId : null;
           return;
@@ -478,19 +533,12 @@ class CodexClient {
   }
 }
 
-function toConnectionConfig(): ConnectionConfig {
-  const settings = settingsStore.get();
-  const normalized = settings.serverUrl.trim().replace(/\/+$/, "");
-  if (!/^ws:\/\//.test(normalized) && !/^wss:\/\//.test(normalized)) {
-    throw new Error("服务器地址必须以 ws:// 或 wss:// 开头");
-  }
-  const token = settings.token.trim();
-  if (!token) throw new Error("请先在设置中填写 Token");
-  return { url: normalized, token };
+function toConnectionConfig(profile: AgentProfile): ConnectionConfig {
+  return requireValidWsProfile(profile);
 }
 
 function desiredKey(config: ConnectionConfig): string {
-  return `${config.url}\u0000${config.token}`;
+  return `${config.url} ${config.token}`;
 }
 
 function protocolError(message: string): Error {
@@ -506,6 +554,22 @@ function contentToJson(content: Content): Json {
   if (content.text) out.text = content.text;
   if (content.url) out.url = content.url;
   return out;
+}
+
+function reviewTargetToJson(target: ReviewTarget): Json {
+  switch (target.type) {
+    case "uncommittedChanges":
+      return { type: "uncommittedChanges" };
+    case "baseBranch":
+      return { type: "baseBranch", branch: target.branch };
+    case "commit": {
+      const out: Json = { type: "commit", sha: target.sha };
+      if (target.title) out.title = target.title;
+      return out;
+    }
+    case "custom":
+      return { type: "custom", instructions: target.instructions };
+  }
 }
 
 function nullableString(obj: Json, name: string): string | undefined {
@@ -645,13 +709,13 @@ function parseTurn(value: Json): Turn {
     id: String(value.id ?? ""),
     status: statusValue(value),
     items: Array.isArray(value.items)
-      ? (value.items as Json[]).map(parseItem).filter((item): item is ThreadItem => item != null)
+      ? (value.items as Json[]).map((v) => parseItem(v)).filter((item): item is ThreadItem => item != null)
       : [],
     error: errorMessage(value),
   };
 }
 
-function parseItem(value: Json | undefined): ThreadItem | null {
+function parseItem(value: Json | undefined, compactionDefaultStatus = "completed"): ThreadItem | null {
   if (!value) return null;
   const id = String(value.id ?? "");
   if (!id) return null;
@@ -683,6 +747,8 @@ function parseItem(value: Json | undefined): ThreadItem | null {
       return { kind: "webSearch", id, query: webSearchQuery(value), status: statusValue(value, "completed") };
     case "reasoning":
       return { kind: "reasoning", id, summary: textFragments(value.summary) };
+    case "contextCompaction":
+      return { kind: "contextCompaction", id, status: statusValue(value, compactionDefaultStatus) };
     default:
       return null;
   }
@@ -707,5 +773,3 @@ function parseModel(value: Json): ModelInfo {
     defaultReasoningEffort: String(value.defaultReasoningEffort ?? "medium"),
   };
 }
-
-export const client = new CodexClient();

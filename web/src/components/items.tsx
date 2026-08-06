@@ -130,6 +130,22 @@ export function ReasoningItem({ item }: { item: Extract<ThreadItem, { kind: "rea
   );
 }
 
+/* ---------------- 上下文压缩卡片（/compact → contextCompaction item） ---------------- */
+
+export function ContextCompactionCard({ item }: { item: Extract<ThreadItem, { kind: "contextCompaction" }> }) {
+  // 只有明确 completed 才显示「已压缩」；其余一律按进行中处理。
+  const done = item.status === "completed";
+  return (
+    <div className="card card-narrow compaction-card">
+      <div className="compaction-row">
+        {!done && <span className="spinner" />}
+        {done && <span className="compaction-done">◎</span>}
+        <span className="compaction-text">{done ? "上下文已压缩" : "正在压缩上下文…"}</span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- 消息分派 ---------------- */
 
 export function MessageItem({ item, streaming }: { item: ThreadItem; streaming: boolean }) {
@@ -148,6 +164,8 @@ export function MessageItem({ item, streaming }: { item: ThreadItem; streaming: 
       return <WebSearchCard item={item} />;
     case "reasoning":
       return <ReasoningItem item={item} />;
+    case "contextCompaction":
+      return <ContextCompactionCard item={item} />;
   }
 }
 
